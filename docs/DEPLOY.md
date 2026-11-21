@@ -100,7 +100,7 @@ or a VPN such as Tailscale.
 - **Anthropic API key:** add it in Canvas → Settings → LLM, or set
   `ANTHROPIC_API_KEY` in `.env`.
 - **Claude Pro/Max:** choose the Claude Code agent in Canvas, then sign in once:
-  `docker compose exec -it agent-canvas npx -y @anthropic-ai/claude-code`. Follow
+  `docker compose exec -it agent-canvas claude`. Follow
   the login link, then quit. The login lives in the `claude-login` volume.
 - **Telegram:** set `TELEGRAM_BOT_TOKEN`, run `docker compose up -d`, send
   `/whoami` to the bot, put the id in `TELEGRAM_ALLOWED_CHAT_IDS`, and

@@ -7,6 +7,7 @@ import {
   AgentServerClient,
   BridgeState,
   chunkText,
+  explainError,
   isAuthorized,
   loadConfig,
   buildIntegrationPrompt,
@@ -354,5 +355,53 @@ describe("telegram bridge teams", () => {
     );
     expect(parseWorkingDir("documents")).toBeNull();
     expect(parseWorkingDir("/documents/../etc")).toBeNull();
+  });
+});
+
+describe("explainError", () => {
+  it("turns a missing login into the steps to fix it", () => {
+    const text = explainError({
+      code: "ACPAuthRequired",
+      detail: "[-32000] Authentication required",
+    });
+
+    expect(text).toContain("docker exec -it agent-canvas claude");
+    expect(text).toContain("/profile default");
+  });
+
+  it("shows other errors as code and detail", () => {
+    expect(
+      explainError({ code: "Timeout", detail: "LLM call timed out" }),
+    ).toBe("Error: Timeout — LLM call timed out");
+    expect(explainError(null)).toBe("");
+  });
+});
+
+describe("BridgeState.switchBot", () => {
+  it("resets per-bot offsets and reply map but keeps the agents", () => {
+    const state = new BridgeState({
+      botId: 111,
+      offset: 200692714,
+      messageMap: { "555:10": "conv-1" },
+      chats: {
+        "555": { agents: [{ id: "conv-1", name: "api" }], active: "conv-1" },
+      },
+    });
+
+    expect(state.switchBot(111)).toBe(false);
+    expect(state.offset).toBe(200692714);
+
+    expect(state.switchBot(222)).toBe(true);
+    expect(state.offset).toBe(0);
+    expect(state.messageMap).toEqual({});
+    expect(state.chats["555"].agents[0].name).toBe("api");
+    expect(state.toJSON().botId).toBe(222);
+  });
+
+  it("adopts the first bot without resetting anything", () => {
+    const state = new BridgeState({ offset: 42 });
+
+    expect(state.switchBot(111)).toBe(false);
+    expect(state.offset).toBe(42);
   });
 });

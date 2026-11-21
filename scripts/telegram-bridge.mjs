@@ -18,6 +18,7 @@ import {
   buildIntegrationPrompt,
   buildLeadPrompt,
   buildMemberPrompt,
+  explainError,
   isAuthorized,
   loadConfig,
   parseAssignments,
@@ -495,9 +496,13 @@ async function watchAgents() {
           );
           if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
         } else if (event === "problem") {
+          const reason =
+            next === "error"
+              ? explainError(await server.lastError(agent.id).catch(() => null))
+              : "";
           await say(
             chatId,
-            `⚠️ @${agent.name} está en estado "${next}". Responde a este mensaje para guiarlo.`,
+            `⚠️ @${agent.name} está en estado "${next}".${reason ? `\n${reason}` : ""}\nResponde a este mensaje para guiarlo.`,
             {},
             agent,
           );
@@ -614,6 +619,21 @@ async function pollTelegram() {
 }
 
 async function main() {
+  let me;
+  try {
+    me = await telegram.getMe();
+  } catch (error) {
+    throw new Error(
+      `Telegram rejected TELEGRAM_BOT_TOKEN (${error.message}). Check the token from @BotFather.`,
+    );
+  }
+  if (state.switchBot(me.id)) {
+    log(
+      `Bot changed to @${me.username}: reset update offset and reply map; agents kept.`,
+    );
+  }
+  save();
+  log(`Connected as @${me.username}`);
   if (config.allowedChats.size === 0) {
     log(
       "SETUP MODE: TELEGRAM_ALLOWED_CHAT_IDS is empty, so only /whoami is answered.",

@@ -195,6 +195,14 @@ ENV UV_TOOL_DIR=/opt/uv-tools \
 RUN uv tool install "mcp-server-qdrant==0.8.1" && \
     uv tool install "graphifyy==0.9.108" && \
     mcp-server-qdrant --help >/dev/null && graphify --help >/dev/null
+# Claude Code CLI, for `docker exec -it agent-canvas claude` → /login with a
+# Pro/Max subscription (the login lands in the claude-login volume). npx in
+# this image does not run the package's postinstall, which leaves its native
+# binary missing, so install it globally and run the installer if needed.
+RUN npm install -g "@anthropic-ai/claude-code@2.1.325" && \
+    (claude --version >/dev/null 2>&1 || \
+      node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs") && \
+    claude --version && npm cache clean --force
 COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
 COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
 COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs

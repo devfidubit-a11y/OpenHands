@@ -151,9 +151,25 @@ const MESSAGE_MAP_LIMIT = 1000;
  */
 export class BridgeState {
   constructor(data = {}) {
+    this.botId = data.botId ?? null;
     this.offset = data.offset ?? 0;
     this.chats = data.chats ?? {};
     this.messageMap = data.messageMap ?? {};
+  }
+
+  /**
+   * Record which bot this state belongs to. When the token now belongs to a
+   * different bot, the update offset and message→agent map (both per bot)
+   * are reset; the chats and their agents are kept. Returns true on a switch.
+   */
+  switchBot(botId) {
+    const switched = this.botId != null && this.botId !== botId;
+    if (switched) {
+      this.offset = 0;
+      this.messageMap = {};
+    }
+    this.botId = botId;
+    return switched;
   }
 
   static load(path) {
@@ -173,6 +189,7 @@ export class BridgeState {
 
   toJSON() {
     return {
+      botId: this.botId,
       offset: this.offset,
       chats: this.chats,
       messageMap: this.messageMap,
@@ -419,6 +436,21 @@ export function parseWorkingDir(args) {
   return clean;
 }
 
+/** A short, actionable explanation for a conversation error, in Spanish. */
+export function explainError(error) {
+  if (!error) return "";
+  const code = String(error.code ?? "");
+  const detail = String(error.detail ?? "").slice(0, 300);
+  if (/auth/i.test(code) || /authentication required/i.test(detail)) {
+    return (
+      "El agente no tiene credenciales. Para Claude Code, inicia sesión una vez:\n" +
+      "docker exec -it agent-canvas claude  → /login\n" +
+      "o usa /profile default con una clave de API en Canvas."
+    );
+  }
+  return `Error: ${code}${detail ? ` — ${detail}` : ""}`;
+}
+
 /**
  * Decides what to tell the chat when an agent's execution status changes.
  * Returns `null` when nothing should be posted.
@@ -522,6 +554,18 @@ export class AgentServerClient {
     return result?.response ?? "";
   }
 
+  /** The conversation's most recent error event, or null. */
+  async lastError(id) {
+    const page = await this.request(
+      "GET",
+      `/api/conversations/${id}/events/search?kind=ConversationErrorEvent&sort_order=TIMESTAMP_DESC&limit=1`,
+    );
+    const event = page?.items?.[0];
+    return event
+      ? { code: event.code ?? "", detail: event.detail ?? "" }
+      : null;
+  }
+
   pause(id) {
     return this.request("POST", `/api/conversations/${id}/pause`);
   }
@@ -598,5 +642,9 @@ export class TelegramClient {
 
   setCommands(commands) {
     return this.call("setMyCommands", { commands });
+  }
+
+  getMe() {
+    return this.call("getMe", {});
   }
 }
