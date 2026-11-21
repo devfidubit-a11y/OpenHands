@@ -398,10 +398,13 @@ describe("BridgeState.switchBot", () => {
     expect(state.toJSON().botId).toBe(222);
   });
 
-  it("adopts the first bot without resetting anything", () => {
-    const state = new BridgeState({ offset: 42 });
+  it("resets a state saved before bot tracking, but not a fresh one", () => {
+    const legacy = new BridgeState({ offset: 42, messageMap: { "1:2": "c" } });
+    expect(legacy.switchBot(111)).toBe(true);
+    expect(legacy.offset).toBe(0);
 
-    expect(state.switchBot(111)).toBe(false);
-    expect(state.offset).toBe(42);
+    const fresh = new BridgeState();
+    expect(fresh.switchBot(111)).toBe(false);
+    expect(fresh.botId).toBe(111);
   });
 });

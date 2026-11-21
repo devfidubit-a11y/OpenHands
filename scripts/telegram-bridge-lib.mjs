@@ -159,11 +159,16 @@ export class BridgeState {
 
   /**
    * Record which bot this state belongs to. When the token now belongs to a
-   * different bot, the update offset and message→agent map (both per bot)
-   * are reset; the chats and their agents are kept. Returns true on a switch.
+   * different bot (or the state predates bot tracking), the update offset and
+   * message→agent map (both per bot) are reset; the chats and their agents
+   * are kept. Returns true when it reset.
    */
   switchBot(botId) {
-    const switched = this.botId != null && this.botId !== botId;
+    // A state without botId predates bot tracking: its offset may belong to
+    // another bot. Resetting is safe because Telegram never re-sends updates
+    // already confirmed by an earlier getUpdates.
+    const switched =
+      this.botId !== botId && (this.botId != null || this.offset > 0);
     if (switched) {
       this.offset = 0;
       this.messageMap = {};
