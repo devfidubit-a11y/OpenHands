@@ -95,7 +95,7 @@ Installed on every start, from `skills/` in this repository:
 | `senior-backend` | APIs and services: validation, data and migrations, auth, idempotency, reliability |
 | `change-safety-guard` | Impact analysis before changes; consent required for deletions, secrets, data, infra; backed-up branches |
 | `feature-branch-pr` | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs |
-| `qa-testing` | Reviews and tests code: unit, integration, component, E2E, snapshot, visual regression |
+| `qa-testing` | Reviews and tests code: unit, integration, API/route handlers, component, E2E, smoke, snapshot, visual regression, performance and Core Web Vitals |
 | `ux-ui-storytelling` | UX/UI design that keeps one narrative across screens, copy and flows |
 | `cloudflare-wrangler` | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent |
 | `qdrant-memory` | How to use the shared memory |
