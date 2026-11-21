@@ -13,8 +13,18 @@
 
 import {
   AgentServerClient,
+  BOT_TEMPLATES,
   BridgeState,
+  SKILL_COMMANDS,
   TelegramClient,
+  buildInsightsPrompt,
+  buildSkillRequest,
+  describeSchedule,
+  expandScheduledText,
+  formatWhen,
+  nextRun,
+  parseScheduleArgs,
+  summarizeEvents,
   buildCoordinatorPrompt,
   buildIntegrationPrompt,
   buildLeadPrompt,
@@ -55,6 +65,23 @@ terminar @coordinador integra los resultados y te da el resumen.
 /result [nombre] — última respuesta del agente
 /stop [nombre] — pausa un agente
 /forget <nombre> — deja de seguir un agente en este chat
+Agentes expertos (los reparte @coordinador):
+/scan <tipo> [enfoque] — escaneo: performance, database, coverage, dead-code, quality, security, dependencies…
+/review <PR> — revisión del PR: bugs, flags y seguridad
+/wiki [notas] — genera o actualiza la wiki del repo con diagramas
+/ask <pregunta> — responde sobre el código con citas (no cambia nada)
+/plan <objetivo> — plan paso a paso y prompt listo para ejecutar
+/latency [enfoque] — arregla lo más lento y abre un PR con el antes/después
+/security [enfoque] — auditoría de seguridad (solo lectura)
+/migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
+/insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
+
+Bots y tareas programadas:
+/bots — plantillas de bots siempre activos (latency, qa, scans, security, deps, wiki)
+/bot <plantilla> [cuándo] — activa un bot en este chat y carpeta
+/schedule <cuándo> <texto o /comando> — programa una tarea (diario 09:00, lunes 09:00, laborables 08:30, cada 6h)
+/schedule — lista las tareas · /schedule rm <id> · /schedule run <id>
+
 /profiles — perfiles de agente del servidor
 /profile <nombre> — perfil para los próximos /new de este chat
 /whoami — muestra el id de este chat`;
@@ -71,6 +98,18 @@ const COMMANDS = [
   ["status", "Estado de un agente"],
   ["result", "Última respuesta de un agente"],
   ["stop", "Pausar un agente"],
+  ["scan", "Escanear el repo por un tipo de problema"],
+  ["review", "Revisar un PR"],
+  ["wiki", "Generar la wiki del repo"],
+  ["ask", "Preguntar sobre el código"],
+  ["plan", "Planificar un cambio"],
+  ["latency", "Optimizar lo más lento"],
+  ["security", "Auditoría de seguridad"],
+  ["migrate", "Migración por pasos"],
+  ["insights", "Analizar la sesión de un agente"],
+  ["bots", "Plantillas de bots"],
+  ["bot", "Activar un bot programado"],
+  ["schedule", "Tareas programadas"],
   ["profiles", "Perfiles de agente"],
   ["help", "Ayuda"],
 ].map(([command, description]) => ({ command, description }));
@@ -154,11 +193,15 @@ function coordinatorOf(chat) {
 }
 
 /** Automatic mode: a plain request goes to the coordinator, created on demand. */
-async function routeToCoordinator(chatId, text, messageId) {
+async function routeToCoordinator(
+  chatId,
+  text,
+  messageId,
+  { workingDir = null, label = null } = {},
+) {
   const chat = state.chat(chatId);
-  const prompt = buildCoordinatorPrompt(text, {
-    workingDir: workingDirFor(chat),
-  });
+  const dir = workingDir ?? workingDirFor(chat);
+  const prompt = buildCoordinatorPrompt(text, { workingDir: dir });
   let lead = coordinatorOf(chat);
   if (!lead) {
     lead = await createAgent(chatId, {
@@ -172,6 +215,7 @@ async function routeToCoordinator(chatId, text, messageId) {
   }
   Object.assign(lead, {
     goal: text,
+    workingDir: dir,
     awaitingPlan: true,
     rounds: 0,
     teamNotified: false,
@@ -180,8 +224,10 @@ async function routeToCoordinator(chatId, text, messageId) {
   save();
   return say(
     chatId,
-    `🧭 @${lead.name} recibió tu petición. Si hace falta, repartirá el trabajo entre subagentes y te iré avisando.`,
-    { replyTo: messageId },
+    label
+      ? `🧭 ${label} → @${lead.name} en ${dir}. Te iré avisando.`
+      : `🧭 @${lead.name} recibió tu petición. Si hace falta, repartirá el trabajo entre subagentes y te iré avisando.`,
+    messageId ? { replyTo: messageId } : {},
     lead,
   );
 }
@@ -210,7 +256,10 @@ async function integrate(chatId, lead) {
 }
 
 /** Creates a conversation and tracks it in the chat; returns the agent. */
-async function createAgent(chatId, { name, task, extra = {} }) {
+async function createAgent(
+  chatId,
+  { name, task, extra = {}, workingDir = null },
+) {
   const chat = state.chat(chatId);
   const profileId = await server.resolveProfileId(
     chat.profile ?? config.defaultProfile,
@@ -223,7 +272,7 @@ async function createAgent(chatId, { name, task, extra = {} }) {
   const conversation = await server.createConversation({
     profileId,
     task,
-    workingDir: workingDirFor(chat),
+    workingDir: workingDir ?? workingDirFor(chat),
     chatId,
   });
   const agentName = state.addAgent(chatId, { id: conversation.id, name });
@@ -266,6 +315,7 @@ async function dispatch(chatId, assignments, lead = null) {
         name,
         task: prompt,
         extra: lead ? { team: lead.id } : {},
+        workingDir: lead?.workingDir ?? null,
       });
       lines.push(`🤖 @${agent.name}: creado`);
     } catch (error) {
@@ -480,7 +530,104 @@ async function handleCommand(chatId, command, args, messageId) {
       );
     }
 
+    case "insights": {
+      const target = args
+        ? state.findAgent(chatId, args)
+        : (chat.agents.find((a) => a.id === chat.active && !a.insights) ??
+          null);
+      if (!target)
+        return say(chatId, "Uso: /insights <nombre del agente> (mira /agents)");
+      const events = [];
+      let pageId = null;
+      for (let page = 0; page < 20; page += 1) {
+        const result = await server.listEvents(target.id, { pageId });
+        events.push(...(result?.items ?? []));
+        pageId = result?.next_page_id ?? null;
+        if (!pageId) break;
+      }
+      const { digest, stats } = summarizeEvents(events);
+      const agent = await createAgent(chatId, {
+        name: `insights-${target.name}`.slice(0, 32),
+        task: buildInsightsPrompt({
+          name: target.name,
+          conversationId: target.id,
+          stats,
+          digest,
+        }),
+        extra: { insights: true },
+      });
+      return say(
+        chatId,
+        `🔎 @${agent.name} analiza la sesión de @${target.name} (${stats.events} eventos). Te aviso con el informe.`,
+        { replyTo: messageId },
+      );
+    }
+
+    case "bots": {
+      const lines = Object.entries(BOT_TEMPLATES).map(
+        ([key, bot]) => `• ${key} (${bot.when}) — ${bot.description}`,
+      );
+      return say(
+        chatId,
+        `Bots disponibles:\n${lines.join("\n")}\n\nActívalo con /bot <nombre> [cuándo], p. ej. /bot latency o /bot latency viernes 10:00. Trabaja en la carpeta actual (${workingDirFor(chat)}).`,
+      );
+    }
+
+    case "bot": {
+      const [key = "", ...when] = args.split(/\s+/).filter(Boolean);
+      const bot = BOT_TEMPLATES[key.toLowerCase()];
+      if (!bot)
+        return say(chatId, "Uso: /bot <plantilla> [cuándo]. Mira /bots.");
+      return addSchedule(
+        chatId,
+        `${when.length ? when.join(" ") : bot.when} ${bot.text}`,
+        { bot: key.toLowerCase() },
+      );
+    }
+
+    case "schedule":
+    case "schedules": {
+      const [sub = "", id = ""] = args.split(/\s+/);
+      const schedules = (chat.schedules ??= []);
+      if (!args || sub === "list") {
+        if (schedules.length === 0)
+          return say(
+            chatId,
+            "No hay tareas programadas. Ej.: /schedule lunes 09:00 /latency  ·  /bots",
+          );
+        return say(
+          chatId,
+          schedules
+            .map(
+              (item) =>
+                `#${item.id} ${describeSchedule(item.schedule)}${item.bot ? ` [bot ${item.bot}]` : ""} → ${item.text}\n   en ${item.workingDir} · próxima: ${formatWhen(item.nextRunAt, config.timeZone)}`,
+            )
+            .join("\n"),
+        );
+      }
+      if (sub === "rm" || sub === "del" || sub === "borrar") {
+        const index = schedules.findIndex((item) => String(item.id) === id);
+        if (index < 0) return say(chatId, `No existe la tarea #${id}.`);
+        const [removed] = schedules.splice(index, 1);
+        save();
+        return say(chatId, `🗑️ Tarea #${removed.id} eliminada.`);
+      }
+      if (sub === "run") {
+        const item = schedules.find((entry) => String(entry.id) === id);
+        if (!item) return say(chatId, `No existe la tarea #${id}.`);
+        return runSchedule(chatId, item);
+      }
+      return addSchedule(chatId, args);
+    }
+
     default:
+      if (SKILL_COMMANDS.includes(command)) {
+        const built = buildSkillRequest(command, args);
+        if (built.usage) return say(chatId, built.usage);
+        return routeToCoordinator(chatId, built.request, messageId, {
+          label: `/${command}`,
+        });
+      }
       return say(chatId, "Comando desconocido. /help");
   }
 }
@@ -587,6 +734,64 @@ async function handleCallback(query) {
     chatId,
     `${accept ? "✅ Aprobado" : "❌ Rechazado"} para @${agent.name}.`,
   );
+}
+
+/** Adds a scheduled request to the chat, bound to the current folder. */
+function addSchedule(chatId, args, extra = {}) {
+  const chat = state.chat(chatId);
+  const parsed = parseScheduleArgs(args);
+  if (parsed.error) return say(chatId, `⚠️ ${parsed.error}`);
+  const first = nextRun(parsed.schedule, Date.now(), config.timeZone);
+  if (!first) return say(chatId, "⚠️ No pude calcular la próxima ejecución.");
+  const schedules = (chat.schedules ??= []);
+  const id = Math.max(0, ...schedules.map((item) => item.id)) + 1;
+  const item = {
+    id,
+    schedule: parsed.schedule,
+    text: parsed.text,
+    workingDir: workingDirFor(chat),
+    nextRunAt: first,
+    createdAt: Date.now(),
+    ...extra,
+  };
+  schedules.push(item);
+  save();
+  return say(
+    chatId,
+    `⏰ Tarea #${id} programada: ${describeSchedule(item.schedule)} (${config.timeZone}) → ${item.text}\nCarpeta: ${item.workingDir}\nPrimera ejecución: ${formatWhen(first, config.timeZone)}. /schedule rm ${id} para quitarla.`,
+  );
+}
+
+/** Runs one scheduled entry now through the coordinator. */
+async function runSchedule(chatId, item) {
+  item.lastRunAt = Date.now();
+  save();
+  return routeToCoordinator(chatId, expandScheduledText(item.text), null, {
+    workingDir: item.workingDir,
+    label: `⏰ Tarea #${item.id}${item.bot ? ` (bot ${item.bot})` : ""}`,
+  });
+}
+
+/** Fires every schedule whose time has come, then books its next run. */
+async function runSchedules() {
+  const now = Date.now();
+  for (const [chatId, chat] of Object.entries(state.chats)) {
+    for (const item of chat.schedules ?? []) {
+      if (!item.nextRunAt || item.nextRunAt > now) continue;
+      // Book the next run first, so a failure can't make it fire in a loop.
+      item.nextRunAt = nextRun(item.schedule, now, config.timeZone);
+      save();
+      try {
+        await runSchedule(chatId, item);
+      } catch (error) {
+        log("schedule failed", item.id, error.message);
+        await say(
+          chatId,
+          `⚠️ La tarea #${item.id} falló: ${error.message}`,
+        ).catch(() => {});
+      }
+    }
+  }
 }
 
 /** Polls tracked agents and posts results, errors and confirmation requests. */
@@ -799,6 +1004,9 @@ async function main() {
     .catch((error) => log("setMyCommands failed", error.message));
   const watch = async () => {
     await watchAgents();
+    await runSchedules().catch((error) =>
+      log("schedules failed", error.message),
+    );
     setTimeout(watch, config.pollMs);
   };
   setTimeout(watch, config.pollMs);

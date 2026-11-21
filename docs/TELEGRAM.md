@@ -77,6 +77,7 @@ In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
 | `TELEGRAM_BRIDGE_STATE` | `.telegram-bridge-state.json` | Where the chat → agent mapping is stored. |
 | `TELEGRAM_BRIDGE_POLL_MS` | `4000` | How often agent status is checked. |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | Bot API base URL, for a local Bot API server or tests. |
+| `TELEGRAM_TIMEZONE` | `TZ`, else `UTC` | Time zone for `/schedule` and `/bot` times, e.g. `America/Bogota`. |
 
 > [!WARNING]
 > Agents can run shell commands on the Agent Server machine. Anyone who can post
@@ -119,6 +120,47 @@ Replies to an agent's message and `@name message` always go to that agent.
 | `/stop [name]` | Pauses an agent. |
 | `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
 | `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
+
+### Expert commands
+
+Each one sends @coordinador a request that names the right skill, in the
+current `/dir` folder. They report first and change code only when you say
+so (fixes go through feature branches and PRs).
+
+| Command | Skill | What you get |
+| --- | --- | --- |
+| `/scan <type> [focus]` | `code-scans` | Ranked findings with `path:line`. Types: performance, database, coverage, dead-code, quality, cleanup, telemetry, accessibility, compliance, security, dependencies, custom. Then "arregla S1 y S3". |
+| `/review <PR>` | `pr-reviewer` | Bugs, Flags and Security findings, test results and a verdict. Posting to GitHub or auto-fixing only when you ask. |
+| `/wiki [notes]` | `repo-wiki` | A wiki in `docs/wiki/` (PR) with Mermaid architecture, data model and API pages, linked to the code. Steer it with `.openhands/wiki.json`. |
+| `/ask <question>` | `codebase-qa` | A cited answer, read-only. |
+| `/plan <goal>` | `codebase-qa` | Impact analysis, steps, open questions and a ready-to-send task prompt. |
+| `/latency [focus]` | `latency-optimizer` | Fixes the slowest endpoint, page, job or query and opens one small PR with before and after numbers. |
+| `/security [focus]` | `security-audit` | OWASP, authz, secrets, dependencies and config findings, read-only. |
+| `/migrate <from → to>` | `migration-modernization` | A step-by-step plan for approval, then one PR per step. |
+| `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
+
+### Bots and scheduled tasks
+
+A **bot** is a scheduled request that owns one outcome. `/bots` lists the
+templates; `/bot <template> [when]` turns one on for this chat and folder:
+
+| Bot | Default | Does |
+| --- | --- | --- |
+| `latency` | Monday 09:00 | `/latency`: one measured speed-up PR a week |
+| `scans` | Wednesday 09:00 | `/scan quality` |
+| `security` | Friday 09:00 | `/security` (read-only) |
+| `deps` | Monday 08:00 | `/scan dependencies` |
+| `wiki` | Sunday 20:00 | `/wiki`, updating only pages whose code changed |
+| `qa` | weekdays 18:00 | Tests the day's PRs in an isolated container |
+
+`/schedule <when> <text or /command>` schedules anything, e.g.
+`/schedule laborables 08:30 /scan coverage src/` or
+`/schedule cada 6h revisa si hay PRs nuevos y resúmelos`. *When* is
+`diario HH:MM`, `laborables HH:MM`, a weekday (`lunes 09:00`, also English),
+or `cada 30m|6h|1d` (15 minutes at least). `/schedule` lists them,
+`/schedule rm <id>` removes one and `/schedule run <id>` runs it now. Times use
+`TELEGRAM_TIMEZONE`. Schedules are stored in the bridge state, so they survive
+restarts; a run missed while the container was down fires once when it's back.
 
 When an agent starts working, the bridge posts "▶️ working", then a short
 "⏳ still working" note every 3 minutes (`TELEGRAM_PROGRESS_MINUTES`, 0 = off)

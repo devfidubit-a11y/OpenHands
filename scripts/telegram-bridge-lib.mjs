@@ -72,6 +72,8 @@ export function loadConfig(env = process.env) {
       Number.isFinite(progressMin) && progressMin >= 0
         ? progressMin * 60_000
         : 180_000,
+    // Time zone for /schedule and /bot times ("lunes 09:00").
+    timeZone: validTimeZone(env.TELEGRAM_TIMEZONE?.trim() || env.TZ?.trim()),
   };
 }
 
@@ -669,6 +671,19 @@ export class AgentServerClient {
     return null;
   }
 
+  /** One page of a conversation's events, oldest first. */
+  listEvents(id, { limit = 100, pageId = null } = {}) {
+    const query = new URLSearchParams({
+      limit: String(limit),
+      sort_order: "TIMESTAMP",
+    });
+    if (pageId) query.set("page_id", pageId);
+    return this.request(
+      "GET",
+      `/api/conversations/${id}/events/search?${query}`,
+    );
+  }
+
   /** The conversation's most recent error event, or null. */
   async lastError(id) {
     const page = await this.request(
@@ -762,4 +777,473 @@ export class TelegramClient {
   getMe() {
     return this.call("getMe", {});
   }
+}
+
+// ---------------------------------------------------------------------------
+// Skill commands (/scan, /review, /wiki, /ask, …)
+// ---------------------------------------------------------------------------
+
+/** Scan types of the code-scans skill. */
+export const SCAN_TYPES = [
+  "performance",
+  "database",
+  "coverage",
+  "dead-code",
+  "quality",
+  "cleanup",
+  "telemetry",
+  "accessibility",
+  "compliance",
+  "security",
+  "dependencies",
+  "custom",
+];
+
+const SCAN_ALIASES = {
+  perf: "performance",
+  rendimiento: "performance",
+  db: "database",
+  queries: "database",
+  tests: "coverage",
+  cobertura: "coverage",
+  dead: "dead-code",
+  muerto: "dead-code",
+  calidad: "quality",
+  limpieza: "cleanup",
+  a11y: "accessibility",
+  accesibilidad: "accessibility",
+  seguridad: "security",
+  deps: "dependencies",
+  dependencias: "dependencies",
+};
+
+/**
+ * Turns a skill command into a request for the coordinator, or returns
+ * `{ usage }` when the arguments are missing. The request names the skill so
+ * the coordinator (and any subagent) follows it.
+ */
+export function buildSkillRequest(command, rawArgs = "") {
+  const args = String(rawArgs ?? "").trim();
+  switch (command) {
+    case "scan": {
+      const [first = "", ...rest] = args.split(/\s+/);
+      const type = SCAN_ALIASES[first.toLowerCase()] ?? first.toLowerCase();
+      if (!SCAN_TYPES.includes(type)) {
+        return {
+          usage: `Uso: /scan <tipo> [enfoque]\nTipos: ${SCAN_TYPES.join(", ")}\nEj.: /scan database src/api`,
+        };
+      }
+      const focus = rest.join(" ");
+      if (type === "custom" && !focus) {
+        return { usage: "Uso: /scan custom <qué buscar>" };
+      }
+      return {
+        request: [
+          `Use the code-scans skill: run a "${type}" scan of the working folder${focus ? `, focused on: ${focus}` : ""}.`,
+          type === "security" ? "Follow the security-audit skill for it." : "",
+          "Report the ranked findings (IDs, path:line, severity, suggested fix) and do not change any code. I will pick which findings to fix.",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      };
+    }
+    case "review":
+      if (!args)
+        return { usage: "Uso: /review <número o URL del PR> [instrucciones]" };
+      return {
+        request: `Use the pr-reviewer skill to review this pull request: ${args}. Group the changes, report Bugs, Flags and Security findings with path:line evidence, run its tests, and give a verdict. Do not post to GitHub or push fixes until I say so.`,
+      };
+    case "wiki":
+      return {
+        request: `Use the repo-wiki skill to generate or update the wiki of the working folder${args ? `. Notes: ${args}` : ""}. Write it on a branch and open a PR, unless the wiki already exists and nothing changed.`,
+      };
+    case "ask":
+      if (!args) return { usage: "Uso: /ask <pregunta sobre el código>" };
+      return {
+        request: `Use the codebase-qa skill (read-only, answer it yourself, no subagents, no changes). Answer with path:line citations: ${args}`,
+      };
+    case "plan":
+      if (!args)
+        return { usage: "Uso: /plan <qué quieres construir o cambiar>" };
+      return {
+        request: `Use the codebase-qa skill in plan mode (read-only, no subagents yet). Plan this and end with a ready-to-run task prompt: ${args}`,
+      };
+    case "latency":
+      return {
+        request: `Use the latency-optimizer skill on the working folder${args ? `, focused on: ${args}` : ""}. Find the slowest endpoint, page, job or query, fix only the worst one, measure before and after, and open one small PR with the numbers.`,
+      };
+    case "security":
+      return {
+        request: `Use the security-audit skill on the working folder${args ? `, focused on: ${args}` : ""}. Read-only: report findings with severity, evidence and fixes; don't change code until I pick findings.`,
+      };
+    case "migrate":
+      if (!args)
+        return {
+          usage:
+            "Uso: /migrate <de qué a qué> (ej.: /migrate JavaScript a TypeScript)",
+        };
+      return {
+        request: `Use the migration-modernization skill: ${args}. Assess and write the step-by-step migration plan first and wait for my approval before changing code.`,
+      };
+    default:
+      return null;
+  }
+}
+
+/** Telegram commands handled by buildSkillRequest. */
+export const SKILL_COMMANDS = [
+  "scan",
+  "review",
+  "wiki",
+  "ask",
+  "plan",
+  "latency",
+  "security",
+  "migrate",
+];
+
+// ---------------------------------------------------------------------------
+// Session insights
+// ---------------------------------------------------------------------------
+
+const NOISY_EVENT_KINDS = new Set(["ConversationStateUpdateEvent"]);
+
+function eventText(event) {
+  const parts = [];
+  const content = event?.llm_message?.content ?? event?.message?.content;
+  if (Array.isArray(content)) {
+    for (const item of content) if (item?.text) parts.push(item.text);
+  } else if (typeof content === "string") parts.push(content);
+  for (const key of ["title", "thought", "detail", "code", "status"]) {
+    const value = event?.[key];
+    if (typeof value === "string" && value) parts.push(`${key}=${value}`);
+    else if (Array.isArray(value))
+      parts.push(value.map((v) => v?.text ?? "").join(""));
+  }
+  const command = event?.action?.command ?? event?.raw_input?.command;
+  if (typeof command === "string") parts.push(`$ ${command}`);
+  const observation = event?.observation?.content ?? event?.observation?.text;
+  if (typeof observation === "string") parts.push(observation);
+  else if (Array.isArray(observation))
+    parts.push(observation.map((v) => v?.text ?? "").join(""));
+  return parts.join(" | ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Compact, chronological digest of a conversation's events for the
+ * session-insights skill: one line per event with elapsed time, kind,
+ * source, tool and a truncated text. Keeps the head and the tail when long.
+ */
+export function summarizeEvents(
+  events,
+  { maxChars = 30_000, lineChars = 220 } = {},
+) {
+  const list = Array.isArray(events) ? events : [];
+  if (list.length === 0) return { digest: "", stats: { events: 0 } };
+  const t0 = Date.parse(list[0].timestamp ?? "") || 0;
+  const counts = {};
+  let errors = 0;
+  let userMessages = 0;
+  let steps = 0;
+  const lines = [];
+  for (const event of list) {
+    const kind = event.kind ?? "Event";
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    // Counted, but too noisy to list one by one.
+    if (NOISY_EVENT_KINDS.has(kind)) continue;
+    if (/Error/.test(kind)) errors += 1;
+    if (/Action|ToolCall/.test(kind)) steps += 1;
+    if (kind === "MessageEvent" && event.source === "user") userMessages += 1;
+    const ts = Date.parse(event.timestamp ?? "");
+    const elapsed = t0 && ts ? `+${Math.round((ts - t0) / 1000)}s` : "+?";
+    const tool = event.tool_name ?? event.action?.kind ?? event.tool_kind ?? "";
+    const text = eventText(event).slice(0, lineChars);
+    lines.push(
+      `${elapsed} ${kind}${event.source ? `[${event.source}]` : ""}${tool ? ` ${tool}` : ""}${text ? `: ${text}` : ""}`,
+    );
+  }
+  let digest = lines.join("\n");
+  if (digest.length > maxChars) {
+    const head = [];
+    const tail = [];
+    let size = 0;
+    for (let i = 0, j = lines.length - 1; i <= j; i += 1, j -= 1) {
+      if (size + lines[i].length > maxChars / 2) break;
+      head.push(lines[i]);
+      size += lines[i].length;
+      if (i !== j) {
+        if (size + lines[j].length > maxChars) break;
+        tail.unshift(lines[j]);
+        size += lines[j].length;
+      }
+    }
+    const skipped = lines.length - head.length - tail.length;
+    digest = [...head, `… (${skipped} events omitted) …`, ...tail].join("\n");
+  }
+  const last = Date.parse(list.at(-1).timestamp ?? "");
+  return {
+    digest,
+    stats: {
+      events: list.length,
+      steps,
+      errors,
+      userMessages,
+      durationSec: t0 && last ? Math.round((last - t0) / 1000) : null,
+      kinds: counts,
+    },
+  };
+}
+
+/** Prompt for an agent that runs the session-insights skill on a digest. */
+export function buildInsightsPrompt({ name, conversationId, stats, digest }) {
+  return [
+    `Use the session-insights skill to analyze the finished session of agent @${name} (conversation ${conversationId}).`,
+    "The bridge already read its events for you; do not call the agent server API.",
+    `Stats: ${JSON.stringify(stats)}`,
+    "Event digest (elapsed time, kind[source], tool: text):",
+    "```",
+    digest || "(no events)",
+    "```",
+    "Report in Spanish: size class, category, outcome, timeline, issues ranked by time lost, an improved prompt, and recommended changes. Save 2-3 reusable lessons with qdrant-memory.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Schedules (/schedule) and bot templates (/bot)
+// ---------------------------------------------------------------------------
+
+export function validTimeZone(zone) {
+  if (!zone) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return "UTC";
+  }
+}
+
+const WEEKDAYS = {
+  domingo: 0,
+  dom: 0,
+  sunday: 0,
+  sun: 0,
+  lunes: 1,
+  lun: 1,
+  monday: 1,
+  mon: 1,
+  martes: 2,
+  mar: 2,
+  tuesday: 2,
+  tue: 2,
+  miercoles: 3,
+  mie: 3,
+  wednesday: 3,
+  wed: 3,
+  jueves: 4,
+  jue: 4,
+  thursday: 4,
+  thu: 4,
+  viernes: 5,
+  vie: 5,
+  friday: 5,
+  fri: 5,
+  sabado: 6,
+  sab: 6,
+  saturday: 6,
+  sat: 6,
+};
+const WEEKDAY_NAMES = [
+  "domingo",
+  "lunes",
+  "martes",
+  "miércoles",
+  "jueves",
+  "viernes",
+  "sábado",
+];
+const MIN_INTERVAL_MS = 15 * 60_000;
+
+const fold = (word) =>
+  String(word ?? "")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+
+function parseTime(token) {
+  const match = /^(\d{1,2})(?::(\d{2}))?$/.exec(String(token ?? ""));
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2] ?? 0);
+  if (hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
+/**
+ * Splits "/schedule" arguments into a schedule and the text to run.
+ * Accepted forms (Spanish or English):
+ *   diario 09:00 <texto>        daily 9:00 <text>
+ *   laborables 08:30 <texto>    weekdays 8:30 <text>
+ *   lunes 09:00 <texto>         monday 9 <text>   (any weekday)
+ *   cada 6h <texto>             every 30m <text>  (15 min or more)
+ * Returns { schedule, text } or { error }.
+ */
+export function parseScheduleArgs(raw) {
+  const tokens = String(raw ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const [first, second] = tokens.map(fold);
+  let schedule = null;
+  let used = 0;
+  if (first === "cada" || first === "every") {
+    const match = /^(\d+)\s*(m|min|h|d)$/.exec(second ?? "");
+    if (!match)
+      return { error: "Intervalo inválido. Ej.: cada 6h, cada 30m, cada 1d" };
+    const unit = { m: 60_000, min: 60_000, h: 3_600_000, d: 86_400_000 }[
+      match[2]
+    ];
+    const everyMs = Number(match[1]) * unit;
+    if (everyMs < MIN_INTERVAL_MS)
+      return { error: "El intervalo mínimo es 15 min." };
+    schedule = { kind: "interval", everyMs };
+    used = 2;
+  } else {
+    const time = parseTime(second);
+    let days = null;
+    if (["diario", "daily", "cada-dia", "todos"].includes(first))
+      days = [0, 1, 2, 3, 4, 5, 6];
+    else if (["laborables", "weekdays", "habiles"].includes(first))
+      days = [1, 2, 3, 4, 5];
+    else if (first in WEEKDAYS) days = [WEEKDAYS[first]];
+    if (!days)
+      return {
+        error:
+          "Cuándo no reconocido. Usa: diario 09:00, laborables 08:30, lunes 09:00 o cada 6h.",
+      };
+    if (!time) return { error: "Hora inválida. Ej.: 09:00" };
+    schedule = { kind: "weekly", days, ...time };
+    used = 2;
+  }
+  const text = tokens.slice(used).join(" ");
+  if (!text) return { error: "Falta qué ejecutar después del cuándo." };
+  return { schedule, text };
+}
+
+function zonedParts(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+  return {
+    day: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
+      parts.weekday,
+    ),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+/** Next run time (ms since epoch) strictly after `from`. */
+export function nextRun(schedule, from = Date.now(), timeZone = "UTC") {
+  const start = typeof from === "number" ? from : from.getTime();
+  if (schedule.kind === "interval") return start + schedule.everyMs;
+  // Walk forward minute by minute (at most 8 days) in the target time zone,
+  // which handles DST shifts without a time zone library.
+  let t = Math.floor(start / 60_000) * 60_000 + 60_000;
+  for (let i = 0; i < 8 * 24 * 60; i += 1, t += 60_000) {
+    const { day, hour, minute } = zonedParts(new Date(t), timeZone);
+    if (
+      hour === schedule.hour &&
+      minute === schedule.minute &&
+      schedule.days.includes(day)
+    )
+      return t;
+  }
+  return null;
+}
+
+/** "lunes 09:00", "laborables 08:30", "cada 6 h". */
+export function describeSchedule(schedule) {
+  if (schedule.kind === "interval") {
+    const minutes = Math.round(schedule.everyMs / 60_000);
+    if (minutes % 1440 === 0) return `cada ${minutes / 1440} d`;
+    if (minutes % 60 === 0) return `cada ${minutes / 60} h`;
+    return `cada ${minutes} min`;
+  }
+  const time = `${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+  const days = [...schedule.days].sort();
+  if (days.length === 7) return `diario ${time}`;
+  if (days.join() === "1,2,3,4,5") return `laborables ${time}`;
+  return `${days.map((d) => WEEKDAY_NAMES[d]).join(", ")} ${time}`;
+}
+
+/** When a run time falls, in the schedule's time zone, for messages. */
+export function formatWhen(ms, timeZone = "UTC") {
+  return new Intl.DateTimeFormat("es-ES", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(ms));
+}
+
+/**
+ * Always-on bots: each template is a schedule plus a skill command, so a bot
+ * owns one outcome (speed, quality, docs) and reports back on its own.
+ */
+export const BOT_TEMPLATES = {
+  latency: {
+    when: "lunes 09:00",
+    text: "/latency",
+    description:
+      "Cada semana busca el endpoint, página o query más lento y abre un PR pequeño con el antes y después.",
+  },
+  scans: {
+    when: "miercoles 09:00",
+    text: "/scan quality",
+    description:
+      "Escaneo semanal de calidad de código con hallazgos priorizados.",
+  },
+  security: {
+    when: "viernes 09:00",
+    text: "/security dependencias, secretos y authz",
+    description: "Auditoría de seguridad semanal (solo lectura).",
+  },
+  deps: {
+    when: "lunes 08:00",
+    text: "/scan dependencies",
+    description:
+      "Revisa dependencias vulnerables o desactualizadas cada semana.",
+  },
+  wiki: {
+    when: "domingo 20:00",
+    text: "/wiki actualiza solo las páginas cuyo código cambió",
+    description: "Mantiene la wiki del repo al día con el código.",
+  },
+  qa: {
+    when: "laborables 18:00",
+    text: "Use the qa-testing skill: find the PRs opened or updated today (gh pr list), run their tests and a smoke test in an isolated container, and report results per PR. Don't push or post anything.",
+    description:
+      "Cada día laborable prueba los PRs del día en un contenedor aislado.",
+  },
+};
+
+/** Request text for a scheduled entry: skill commands expand, text stays. */
+export function expandScheduledText(text) {
+  const parsed = parseMessage(String(text ?? ""));
+  if (parsed.kind === "command" && SKILL_COMMANDS.includes(parsed.command)) {
+    const built = buildSkillRequest(parsed.command, parsed.args);
+    if (built?.request) return built.request;
+  }
+  return String(text ?? "").trim();
 }

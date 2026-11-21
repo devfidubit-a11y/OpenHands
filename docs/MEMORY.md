@@ -99,6 +99,14 @@ Installed on every start, from `skills/` in this repository:
 | `ux-ui-storytelling` | UX/UI design that keeps one narrative across screens, copy and flows |
 | `docker-containers` | Dockerize apps, Compose, isolated test containers on a private Docker engine, container deploys (with consent) |
 | `cloudflare-wrangler` | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent |
+| `latency-optimizer` | Finds the slowest endpoint/page/job/query, fixes the worst one, PR with before/after numbers (`/latency`, `/bot latency`) |
+| `code-scans` | Repo scans by type: performance, database, coverage, dead code, quality, security, dependencies… (`/scan`) |
+| `repo-wiki` | Generated wiki with Mermaid architecture and source links (`/wiki`) |
+| `codebase-qa` | Cited answers about the code and plan mode, read-only (`/ask`, `/plan`) |
+| `pr-reviewer` | PR review with Bugs/Flags/Security, tests, verdict, optional auto-fix (`/review`) |
+| `security-audit` | OWASP, authz, secrets, dependency and config audit (`/security`) |
+| `migration-modernization` | Framework/language migrations in small tested PRs (`/migrate`) |
+| `session-insights` | Post-mortem of an agent session; lessons saved to memory (`/insights`) |
 | `qdrant-memory` | How to use the shared memory |
 | `code-review` | From the OpenHands extensions package |
 | `graphify` | Installed by Graphify itself |

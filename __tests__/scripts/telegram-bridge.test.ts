@@ -5,8 +5,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentServerClient,
+  BOT_TEMPLATES,
   BridgeState,
+  buildInsightsPrompt,
+  buildSkillRequest,
   chunkText,
+  describeSchedule,
+  expandScheduledText,
+  nextRun,
+  parseScheduleArgs,
+  summarizeEvents,
+  validTimeZone,
   describeStep,
   explainError,
   formatElapsed,
@@ -463,6 +472,235 @@ describe("automatic mode prompts", () => {
     ).toContain("assign it with @name: task lines");
     expect(buildIntegrationPrompt(results, "form")).not.toContain(
       "assign it with @name",
+    );
+  });
+});
+
+describe("skill commands", () => {
+  it("builds a scan request for known types and aliases", () => {
+    const built = buildSkillRequest("scan", "db src/api");
+    expect(built.request).toMatch(/code-scans/);
+    expect(built.request).toMatch(/"database" scan/);
+    expect(built.request).toMatch(/src\/api/);
+    expect(built.request).toMatch(/do not change any code/);
+  });
+
+  it("shows usage for unknown scan types and missing args", () => {
+    expect(buildSkillRequest("scan", "").usage).toMatch(/Tipos:/);
+    expect(buildSkillRequest("scan", "nope").usage).toMatch(/Uso/);
+    expect(buildSkillRequest("scan", "custom").usage).toMatch(/custom/);
+    expect(buildSkillRequest("review", "").usage).toMatch(/PR/);
+    expect(buildSkillRequest("ask", " ").usage).toMatch(/pregunta/);
+  });
+
+  it("routes security scans through security-audit", () => {
+    expect(buildSkillRequest("scan", "seguridad").request).toMatch(
+      /security-audit/,
+    );
+  });
+
+  it("names the skill for every command", () => {
+    expect(buildSkillRequest("review", "42").request).toMatch(/pr-reviewer/);
+    expect(buildSkillRequest("review", "42").request).toMatch(
+      /Do not post to GitHub/,
+    );
+    expect(buildSkillRequest("wiki", "").request).toMatch(/repo-wiki/);
+    expect(buildSkillRequest("ask", "where is auth?").request).toMatch(
+      /codebase-qa.*read-only/,
+    );
+    expect(buildSkillRequest("plan", "add login").request).toMatch(/plan mode/);
+    expect(buildSkillRequest("latency", "").request).toMatch(
+      /latency-optimizer/,
+    );
+    expect(buildSkillRequest("migrate", "JS a TS").request).toMatch(
+      /migration-modernization.*wait for my approval/,
+    );
+    expect(buildSkillRequest("unknown", "x")).toBeNull();
+  });
+});
+
+describe("schedules", () => {
+  it("parses daily, weekday, weekly and interval specs", () => {
+    expect(parseScheduleArgs("diario 09:00 /latency")).toEqual({
+      schedule: {
+        kind: "weekly",
+        days: [0, 1, 2, 3, 4, 5, 6],
+        hour: 9,
+        minute: 0,
+      },
+      text: "/latency",
+    });
+    expect(parseScheduleArgs("laborables 8:30 run qa").schedule.days).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    expect(parseScheduleArgs("Miércoles 18 haz algo").schedule).toEqual({
+      kind: "weekly",
+      days: [3],
+      hour: 18,
+      minute: 0,
+    });
+    expect(parseScheduleArgs("every 2h check").schedule).toEqual({
+      kind: "interval",
+      everyMs: 7_200_000,
+    });
+  });
+
+  it("rejects bad specs", () => {
+    expect(parseScheduleArgs("cada 5m x").error).toMatch(/15 min/);
+    expect(parseScheduleArgs("lunes 25:00 x").error).toMatch(/Hora/);
+    expect(parseScheduleArgs("pronto x").error).toMatch(/Cuándo/);
+    expect(parseScheduleArgs("diario 09:00").error).toMatch(/Falta/);
+  });
+
+  it("computes the next run in the schedule's time zone", () => {
+    // Friday 2026-11-20 12:00 UTC.
+    const from = Date.UTC(2026, 10, 20, 12, 0);
+    const monday9 = { kind: "weekly", days: [1], hour: 9, minute: 0 };
+    expect(new Date(nextRun(monday9, from, "UTC")).toISOString()).toBe(
+      "2026-11-23T09:00:00.000Z",
+    );
+    // 09:00 in Madrid (UTC+1 in November) is 08:00 UTC.
+    expect(
+      new Date(nextRun(monday9, from, "Europe/Madrid")).toISOString(),
+    ).toBe("2026-11-23T08:00:00.000Z");
+    const daily = {
+      kind: "weekly",
+      days: [0, 1, 2, 3, 4, 5, 6],
+      hour: 12,
+      minute: 0,
+    };
+    expect(nextRun(daily, from, "UTC")).toBe(from + 86_400_000);
+    expect(nextRun({ kind: "interval", everyMs: 3_600_000 }, from)).toBe(
+      from + 3_600_000,
+    );
+  });
+
+  it("describes schedules and falls back to UTC for bad zones", () => {
+    expect(describeSchedule(parseScheduleArgs("lunes 9:05 x").schedule)).toBe(
+      "lunes 09:05",
+    );
+    expect(describeSchedule(parseScheduleArgs("cada 90m x").schedule)).toBe(
+      "cada 90 min",
+    );
+    expect(describeSchedule(parseScheduleArgs("weekdays 7 x").schedule)).toBe(
+      "laborables 07:00",
+    );
+    expect(validTimeZone("Not/AZone")).toBe("UTC");
+    expect(validTimeZone("America/Bogota")).toBe("America/Bogota");
+  });
+
+  it("bot templates have valid schedules and expand skill commands", () => {
+    for (const bot of Object.values(BOT_TEMPLATES)) {
+      const parsed = parseScheduleArgs(`${bot.when} ${bot.text}`);
+      expect(parsed.error).toBeUndefined();
+      expect(expandScheduledText(parsed.text).length).toBeGreaterThan(20);
+    }
+    expect(expandScheduledText("/latency")).toMatch(/latency-optimizer/);
+    expect(expandScheduledText("plain text")).toBe("plain text");
+  });
+
+  it("loads the time zone from config", () => {
+    expect(
+      loadConfig({
+        TELEGRAM_BOT_TOKEN: "x",
+        TELEGRAM_TIMEZONE: "Europe/Madrid",
+      }).timeZone,
+    ).toBe("Europe/Madrid");
+    expect(loadConfig({ TELEGRAM_BOT_TOKEN: "x" }).timeZone).toBe("UTC");
+  });
+});
+
+describe("session insights", () => {
+  const events = [
+    {
+      kind: "MessageEvent",
+      source: "user",
+      timestamp: "2026-11-21T10:00:00Z",
+      llm_message: { content: [{ text: "fix the login" }] },
+    },
+    {
+      kind: "ActionEvent",
+      source: "agent",
+      timestamp: "2026-11-21T10:00:30Z",
+      tool_name: "terminal",
+      action: { kind: "ExecuteBashAction", command: "npm test" },
+    },
+    {
+      kind: "ConversationErrorEvent",
+      timestamp: "2026-11-21T10:02:00Z",
+      code: "Timeout",
+      detail: "tool timed out",
+    },
+  ];
+
+  it("summarizes events with stats and elapsed times", () => {
+    const { digest, stats } = summarizeEvents(events);
+    expect(stats).toMatchObject({
+      events: 3,
+      steps: 1,
+      errors: 1,
+      userMessages: 1,
+      durationSec: 120,
+    });
+    expect(digest).toMatch(/\+0s MessageEvent\[user\].*fix the login/);
+    expect(digest).toMatch(/\+30s ActionEvent\[agent\] terminal.*\$ npm test/);
+    expect(digest).toMatch(/code=Timeout/);
+  });
+
+  it("counts but doesn't list state updates", () => {
+    const { digest, stats } = summarizeEvents([
+      ...events,
+      {
+        kind: "ConversationStateUpdateEvent",
+        timestamp: "2026-11-21T10:03:00Z",
+      },
+    ]);
+    expect(stats.kinds.ConversationStateUpdateEvent).toBe(1);
+    expect(digest).not.toMatch(/ConversationStateUpdateEvent/);
+  });
+
+  it("keeps head and tail when the digest is too long", () => {
+    const many = Array.from({ length: 500 }, (_, i) => ({
+      kind: "ActionEvent",
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+      action: { command: `step ${i} ${"x".repeat(100)}` },
+    }));
+    const { digest } = summarizeEvents(many, { maxChars: 5_000 });
+    expect(digest.length).toBeLessThan(6_000);
+    expect(digest).toMatch(/step 0 /);
+    expect(digest).toMatch(/step 499 /);
+    expect(digest).toMatch(/events omitted/);
+  });
+
+  it("handles empty input and builds the prompt", () => {
+    expect(summarizeEvents([]).stats.events).toBe(0);
+    const prompt = buildInsightsPrompt({
+      name: "front",
+      conversationId: "abc",
+      stats: { events: 3 },
+      digest: "line",
+    });
+    expect(prompt).toMatch(/session-insights skill/);
+    expect(prompt).toMatch(/do not call the agent server API/);
+  });
+
+  it("lists events oldest first with paging", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ items: [], next_page_id: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const client = new AgentServerClient({
+      baseUrl: "http://x",
+      sessionApiKey: "k",
+      fetchImpl,
+    });
+    await client.listEvents("c1", { pageId: "p2" });
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe(
+      "http://x/api/conversations/c1/events/search?limit=100&sort_order=TIMESTAMP&page_id=p2",
     );
   });
 });
