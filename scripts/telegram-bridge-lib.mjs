@@ -350,6 +350,40 @@ export function buildLeadPrompt(task, max = MAX_TEAM_SIZE) {
   ].join("\n");
 }
 
+export const MAX_AUTO_ROUNDS = 3;
+
+/**
+ * Message for the chat's coordinator in automatic mode: answer small things
+ * directly, or plan with `@name: task` lines that the bridge turns into
+ * sub-agents on its own.
+ */
+export function buildCoordinatorPrompt(
+  request,
+  { workingDir = "", max = MAX_TEAM_SIZE } = {},
+) {
+  return [
+    "You are the coordinator of a team of AI agents. The user talks to you from",
+    "Telegram; the bridge creates and runs the agents you assign.",
+    workingDir ? `Working folder: ${workingDir}` : "",
+    "",
+    "- If the request is a question, a small task, or a status check, do it or",
+    "  answer it yourself. Do not write any @name lines.",
+    `- If it is bigger work, study the project and split it into at most ${max}`,
+    "  independent subtasks that agents can do in parallel without editing the",
+    "  same files. End your answer with the plan, one line per subtask:",
+    "  @short-name: what to do, which files or area, and what done looks like",
+    "  The bridge creates those agents immediately and sends you their reports",
+    "  when they finish. Reusing a name sends that agent a follow-up.",
+    "- Follow the change-safety-guard skill: if the work would delete, replace,",
+    "  or touch data, secrets, auth, payments, infra or dependencies, ask the user",
+    "  first and do not assign it until they agree.",
+    "",
+    `User request: ${request}`,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
 /** kebab-case slug for branch names: "Add a contact form!" → "add-contact-form". */
 export function slugify(text, maxWords = 4) {
   const words = String(text ?? "")
@@ -399,7 +433,11 @@ export function buildMemberPrompt({ name, lead, goal, subtask }) {
 }
 
 /** Message asking the lead to integrate the team's results. */
-export function buildIntegrationPrompt(results, goal = "") {
+export function buildIntegrationPrompt(
+  results,
+  goal = "",
+  { followUp = false } = {},
+) {
   return [
     "Your team finished. Here is what each agent reported:",
     "",
@@ -415,6 +453,13 @@ export function buildIntegrationPrompt(results, goal = "") {
     "describes the whole feature addition and links the members' PRs. Do not",
     "merge into the default branch. Reply with a final summary for the user",
     "and the PR link.",
+    ...(followUp
+      ? [
+          "",
+          "If something is still missing, assign it with @name: task lines",
+          "(an existing name gets a follow-up). Otherwise write no @name lines.",
+        ]
+      : []),
   ].join("\n");
 }
 

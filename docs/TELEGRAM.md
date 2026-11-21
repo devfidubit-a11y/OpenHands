@@ -83,6 +83,23 @@ In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
 > in an allowed chat can tell them what to do. Use a private chat or a closed
 > group, and set `TELEGRAM_ALLOWED_USER_IDS` for shared groups.
 
+## Automatic mode (default)
+
+Write what you need in plain language, with no command. The chat's
+**@coordinador** agent gets the request and:
+
+1. answers directly if it's a question or a small task;
+2. otherwise plans the work as `@name: subtask` lines, and the bridge creates
+   those sub-agents right away (no button);
+3. when they all finish, the bridge sends their reports back to @coordinador,
+   which integrates them and either assigns follow-ups (reusing the same
+   agents) or replies with the final summary.
+
+Distribution is capped at 3 rounds per request. Destructive or sensitive work
+still needs your consent (change-safety-guard). `/auto off` switches to manual
+mode, where plain text goes to the active agent; `/auto on` switches back.
+Replies to an agent's message and `@name message` always go to that agent.
+
 ## Commands
 
 | Command | What it does |

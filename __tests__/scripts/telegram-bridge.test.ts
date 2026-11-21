@@ -12,6 +12,7 @@ import {
   formatElapsed,
   isAuthorized,
   loadConfig,
+  buildCoordinatorPrompt,
   buildIntegrationPrompt,
   buildMemberPrompt,
   parseAssignments,
@@ -438,5 +439,30 @@ describe("progress notices", () => {
       loadConfig({ TELEGRAM_BOT_TOKEN: "t", TELEGRAM_PROGRESS_MINUTES: "0" })
         .progressMs,
     ).toBe(0);
+  });
+});
+
+describe("automatic mode prompts", () => {
+  it("lets the coordinator answer directly or plan with @name lines", () => {
+    const prompt = buildCoordinatorPrompt("añade un formulario", {
+      workingDir: "/documents/dracma-web",
+    });
+
+    expect(prompt).toContain("Working folder: /documents/dracma-web");
+    expect(prompt).toContain("Do not write any @name lines");
+    expect(prompt).toContain("@short-name:");
+    expect(prompt).toContain("change-safety-guard");
+    expect(prompt).toContain("User request: añade un formulario");
+  });
+
+  it("invites follow-up assignments only when allowed", () => {
+    const results = [{ name: "api", response: "done" }];
+
+    expect(
+      buildIntegrationPrompt(results, "form", { followUp: true }),
+    ).toContain("assign it with @name: task lines");
+    expect(buildIntegrationPrompt(results, "form")).not.toContain(
+      "assign it with @name",
+    );
   });
 });

@@ -15,6 +15,7 @@ import {
   AgentServerClient,
   BridgeState,
   TelegramClient,
+  buildCoordinatorPrompt,
   buildIntegrationPrompt,
   buildLeadPrompt,
   buildMemberPrompt,
@@ -23,6 +24,7 @@ import {
   formatElapsed,
   isAuthorized,
   loadConfig,
+  MAX_AUTO_ROUNDS,
   parseAssignments,
   parseMessage,
   parseNewArgs,
@@ -32,6 +34,11 @@ import {
 } from "./telegram-bridge-lib.mjs";
 
 const HELP = `Puente OpenHands ↔ Telegram
+
+Modo automático (activado): escribe lo que necesitas en lenguaje normal.
+@coordinador responde o planifica, el bot crea los subagentes solo, y al
+terminar @coordinador integra los resultados y te da el resumen.
+/auto off — vuelve al modo manual (el texto va al agente activo)
 
 /new <tarea> — crea un agente nuevo con esa tarea
 /new @nombre <tarea> — igual, con nombre propio
@@ -53,6 +60,7 @@ const HELP = `Puente OpenHands ↔ Telegram
 /whoami — muestra el id de este chat`;
 
 const COMMANDS = [
+  ["auto", "Modo automático on/off"],
   ["new", "Crear un agente con una tarea"],
   ["team", "Líder que planifica y reparte subtareas"],
   ["dispatch", "Repartir tareas: @nombre tarea por línea"],
@@ -138,6 +146,69 @@ function workingDirFor(chat) {
   return chat.workingDir ?? config.workingDir;
 }
 
+const isAuto = (chat) => chat.auto !== false;
+
+/** The chat's persistent coordinator (automatic mode), or null. */
+function coordinatorOf(chat) {
+  return chat.agents.find((agent) => agent.coordinator) ?? null;
+}
+
+/** Automatic mode: a plain request goes to the coordinator, created on demand. */
+async function routeToCoordinator(chatId, text, messageId) {
+  const chat = state.chat(chatId);
+  const prompt = buildCoordinatorPrompt(text, {
+    workingDir: workingDirFor(chat),
+  });
+  let lead = coordinatorOf(chat);
+  if (!lead) {
+    lead = await createAgent(chatId, {
+      name: "coordinador",
+      task: prompt,
+      extra: { role: "lead", coordinator: true },
+    });
+  } else {
+    await server.sendMessage(lead.id, prompt);
+    markPending(lead);
+  }
+  Object.assign(lead, {
+    goal: text,
+    awaitingPlan: true,
+    rounds: 0,
+    teamNotified: false,
+  });
+  chat.active = lead.id;
+  save();
+  return say(
+    chatId,
+    `🧭 @${lead.name} recibió tu petición. Si hace falta, repartirá el trabajo entre subagentes y te iré avisando.`,
+    { replyTo: messageId },
+    lead,
+  );
+}
+
+/** Send the team's results to its lead; in automatic mode it may follow up. */
+async function integrate(chatId, lead) {
+  const chat = state.chat(chatId);
+  const members = chat.agents.filter((item) => item.team === lead.id);
+  const results = [];
+  for (const member of members) {
+    results.push({
+      name: member.name,
+      response: await server.finalResponse(member.id).catch(() => ""),
+    });
+  }
+  const followUp =
+    isAuto(chat) && lead.coordinator && (lead.rounds ?? 0) < MAX_AUTO_ROUNDS;
+  await server.sendMessage(
+    lead.id,
+    buildIntegrationPrompt(results, lead.goal, { followUp }),
+  );
+  markPending(lead);
+  lead.awaitingPlan = followUp;
+  save();
+  return say(chatId, `🧩 @${lead.name} está integrando los resultados.`);
+}
+
 /** Creates a conversation and tracks it in the chat; returns the agent. */
 async function createAgent(chatId, { name, task, extra = {} }) {
   const chat = state.chat(chatId);
@@ -170,7 +241,13 @@ async function dispatch(chatId, assignments, lead = null) {
   const lines = [];
   for (const { name, task } of assignments) {
     try {
-      const existing = lead ? null : state.findAgent(chatId, name);
+      const existing = lead
+        ? (state
+            .chat(chatId)
+            .agents.find(
+              (item) => item.team === lead.id && item.name === name,
+            ) ?? null)
+        : state.findAgent(chatId, name);
       if (existing) {
         await server.sendMessage(existing.id, task);
         markPending(existing);
@@ -252,6 +329,20 @@ async function handleCommand(chatId, command, args, messageId) {
       }
       const lines = await dispatch(chatId, assignments);
       return say(chatId, `📦 Reparto:\n${lines.join("\n")}`);
+    }
+
+    case "auto": {
+      const value = args.toLowerCase();
+      if (value === "on" || value === "off") {
+        chat.auto = value === "on";
+        save();
+      }
+      return say(
+        chatId,
+        isAuto(chat)
+          ? "🤖 Modo automático activado: escribe tu petición y @coordinador reparte el trabajo. (/auto off para el modo manual)"
+          : "✋ Modo manual: el texto va al agente activo. (/auto on para el automático)",
+      );
     }
 
     case "dir": {
@@ -434,6 +525,9 @@ async function handleMessage(message) {
   // With BotFather privacy mode on (the default), a group only delivers
   // commands, @bot mentions and replies to the bot, so plain chatter between
   // people never reaches the active agent.
+  if (isAuto(state.chat(chatId))) {
+    return routeToCoordinator(chatId, message.text.trim(), message.message_id);
+  }
   const active = state.activeAgent(chatId);
   if (!active) {
     if (message.chat.type === "private")
@@ -471,22 +565,8 @@ async function handleCallback(query) {
   }
 
   if (action === "sum") {
-    const members = chat.agents.filter((item) => item.team === agent.id);
-    const results = [];
-    for (const member of members) {
-      results.push({
-        name: member.name,
-        response: await server.finalResponse(member.id).catch(() => ""),
-      });
-    }
-    await server.sendMessage(
-      agent.id,
-      buildIntegrationPrompt(results, agent.goal),
-    );
-    markPending(agent);
-    save();
     await telegram.answerCallback(query.id, "Enviado al líder");
-    return say(chatId, `🧩 @${agent.name} está integrando los resultados.`);
+    return integrate(chatId, agent);
   }
 
   if (action !== "ok" && action !== "no") {
@@ -570,6 +650,15 @@ async function watchAgents() {
     for (const lead of chat.agents.filter((item) => item.role === "lead")) {
       if (lead.teamNotified || !teamDone(chat.agents, lead.id)) continue;
       lead.teamNotified = true;
+      if (isAuto(chat) && lead.coordinator) {
+        await say(chatId, `🏁 Terminó el equipo de @${lead.name}.`).catch(
+          () => {},
+        );
+        await integrate(chatId, lead).catch((error) =>
+          log("auto integrate failed", error.message),
+        );
+        continue;
+      }
       const members = chat.agents
         .filter((item) => item.team === lead.id)
         .map((item) => `@${item.name} (${item.lastStatus})`);
@@ -598,6 +687,7 @@ async function offerPlan(chatId, lead, response) {
   lead.awaitingPlan = false;
   const plan = parseAssignments(response);
   if (plan.length === 0) {
+    if (lead.coordinator) return; // it answered directly; already posted
     await say(
       chatId,
       `@${lead.name} no dejó un plan con líneas "@nombre: tarea". Responde a su mensaje para pedírselo, o reparte tú con /dispatch.`,
@@ -605,6 +695,22 @@ async function offerPlan(chatId, lead, response) {
       lead,
     );
     return;
+  }
+  const chat = state.chat(chatId);
+  if (
+    isAuto(chat) &&
+    lead.coordinator &&
+    (lead.rounds ?? 0) < MAX_AUTO_ROUNDS
+  ) {
+    lead.rounds = (lead.rounds ?? 0) + 1;
+    lead.teamNotified = false;
+    const lines = await dispatch(chatId, plan, lead);
+    return say(
+      chatId,
+      `🚀 @${lead.name} repartió el trabajo (ronda ${lead.rounds}/${MAX_AUTO_ROUNDS}):\n${plan.map((item) => `• @${item.name}: ${item.task}`).join("\n")}\n\n${lines.join("\n")}\nTe aviso cuando terminen.`,
+      {},
+      lead,
+    );
   }
   lead.plan = plan;
   save();
