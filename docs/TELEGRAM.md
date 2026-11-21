@@ -41,6 +41,28 @@ flowchart LR
    npm run telegram-bridge
    ```
 
+### In the desktop app
+
+The desktop app starts the bridge on its own. You don't need a terminal, a
+session key or a server URL. On first launch it creates a commented
+`telegram.env` file:
+
+| OS | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/OpenHands Agent Canvas/telegram.env` |
+| Windows | `%APPDATA%\OpenHands Agent Canvas\telegram.env` |
+| Linux | `~/.config/OpenHands Agent Canvas/telegram.env` |
+
+1. Set `TELEGRAM_BOT_TOKEN`, then restart the app. The bot is now in setup mode.
+2. Send `/whoami` to the bot. Put the id it returns in
+   `TELEGRAM_ALLOWED_CHAT_IDS`, then restart the app again.
+
+The bridge stops when you quit the app. If it crashes, it restarts on its own
+after a short wait, and the rest of the app keeps running. Variables set in the
+app's environment override the file.
+
+In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
+
 ### Environment variables
 
 | Variable | Default | Meaning |

@@ -49,13 +49,29 @@ import {
   safeStorage,
   shell,
 } from "electron";
-import { chmodSync, existsSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { isExternalBrowsableUrl, isLoopbackAppUrl } from "./lib/window-url-policy.mjs";
+import {
+  isExternalBrowsableUrl,
+  isLoopbackAppUrl,
+} from "./lib/window-url-policy.mjs";
 import { resolveBundledRuntimeDir } from "./lib/bundled-runtime-dir.mjs";
+import {
+  buildTelegramBridgeEnv,
+  parseTelegramEnvFile,
+  TELEGRAM_CONFIG_FILENAME,
+  TELEGRAM_CONFIG_TEMPLATE,
+  telegramRestartDelayMs,
+} from "./lib/telegram-bridge-config.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -669,7 +685,8 @@ async function startStack() {
   const entryUrl = pathToFileURL(
     join(scriptsDir, "dev-with-automation.mjs"),
   ).href;
-  const { main } = await import(entryUrl);
+  const launcher = await import(entryUrl);
+  const { main } = launcher;
 
   // main() starts agent-server + automation backend + static server + ingress.
   //   skipNpmCheck: npm is not needed at runtime in static mode.
@@ -708,6 +725,77 @@ async function startStack() {
         "Check your internet connection and try again.",
     );
   }
+  return { launcher, config: result.config };
+}
+
+// ── Telegram bridge ───────────────────────────────────────────────────────────
+//
+// Optional: coordinate agents from a Telegram chat (docs/TELEGRAM.md). The
+// settings live in <userData>/telegram.env, created from a commented template
+// on first launch; the bridge only runs once TELEGRAM_BOT_TOKEN is filled in.
+// It is spawned through the stack's spawnService so the quit-time SIGTERM
+// cleanup stops it with the other services. A crash restarts only the bridge,
+// with backoff, and never takes the app down.
+
+function readTelegramFileEnv() {
+  const userData = app.getPath("userData");
+  const filePath = join(userData, TELEGRAM_CONFIG_FILENAME);
+  try {
+    if (!existsSync(filePath)) {
+      mkdirSync(userData, { recursive: true });
+      writeFileSync(filePath, TELEGRAM_CONFIG_TEMPLATE, { mode: 0o600 });
+      return { filePath, fileEnv: {} };
+    }
+    return {
+      filePath,
+      fileEnv: parseTelegramEnvFile(readFileSync(filePath, "utf-8")),
+    };
+  } catch (err) {
+    console.warn(`[desktop] Could not read ${filePath}:`, err);
+    return { filePath, fileEnv: {} };
+  }
+}
+
+function startTelegramBridge({ launcher, config }) {
+  const { filePath, fileEnv } = readTelegramFileEnv();
+  const env = buildTelegramBridgeEnv({
+    fileEnv,
+    processEnv: process.env,
+    agentServerUrl: launcher.getAgentServerBaseUrl(config),
+    sessionApiKey: config.sessionApiKey,
+    statePath: join(app.getPath("userData"), "telegram-bridge-state.json"),
+  });
+  if (!env) {
+    console.log(
+      `[desktop] Telegram bridge off (set TELEGRAM_BOT_TOKEN in ${filePath})`,
+    );
+    return;
+  }
+
+  const script = join(scriptsDir, "telegram-bridge.mjs");
+  let attempt = 0;
+  const launch = () => {
+    const startedAt = Date.now();
+    launcher.spawnService("telegram", "node", [script], {
+      env,
+      cwd: projectRoot,
+      onUnexpectedExit: (reason) => {
+        if (cleanupStarted) return;
+        // A run that stayed up for a while resets the backoff.
+        attempt = Date.now() - startedAt > 10 * 60_000 ? 1 : attempt + 1;
+        const delay = telegramRestartDelayMs(attempt);
+        console.warn(
+          `[desktop] Telegram bridge exited (${reason}); restarting in ${delay / 1000}s`,
+        );
+        const t = setTimeout(() => {
+          if (!cleanupStarted) launch();
+        }, delay);
+        if (t.unref) t.unref();
+      },
+    });
+  };
+  launch();
+  console.log("[desktop] Telegram bridge started");
 }
 
 let startupFailed = false;
@@ -793,7 +881,7 @@ app.whenReady().then(async () => {
 
   try {
     setBootPhase("Starting backend services…");
-    await startStack();
+    const stack = await startStack();
 
     // Stage 1: ingress proxy is bound (anything < 500 on /).
     setBootPhase("Waiting for proxy…");
@@ -810,6 +898,12 @@ app.whenReady().then(async () => {
     if (startupFailed) return;
     setBootPhase("Ready.");
     createMainWindow();
+    try {
+      startTelegramBridge(stack);
+    } catch (err) {
+      // Optional feature: never block the app on it.
+      console.warn("[desktop] Telegram bridge failed to start:", err);
+    }
   } catch (err) {
     failStartup(err);
   }

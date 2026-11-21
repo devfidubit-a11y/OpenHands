@@ -54,19 +54,28 @@ docker compose up -d
 docker compose ps          # wait until the status shows "healthy" (~1–3 min)
 ```
 
-Get the generated session key. The Canvas login screen asks for it:
+Canvas is served at `http://127.0.0.1:8000/canvas/`. With `AUTO_LOGIN=true`
+(the `.env.example` default) it opens already connected to the container's own
+backend, so there is no "Add a backend" step and no OpenHands Cloud sign-in.
+You go straight to choosing the agent.
+
+With `AUTO_LOGIN=false`, Canvas asks for the generated session key:
 
 ```bash
 docker compose exec agent-canvas cat /home/openhands/.openhands/agent-canvas/api-key.txt
 ```
 
-Canvas is served at `http://127.0.0.1:8000/canvas/` on the server.
-
 ## 4. Expose it safely
 
 The port is bound to **loopback** by default. Agents can run shell commands, so
-never publish it unprotected. Put a TLS reverse proxy in front. For example,
-with Caddy (it gets certificates automatically):
+never publish it unprotected.
+
+> [!WARNING]
+> Set `AUTO_LOGIN=false` before you open the port or put a public proxy in front.
+> With auto-login on, anyone who can load the page gets the session key.
+
+Put a TLS reverse proxy in front. For example, with Caddy (it gets certificates
+automatically):
 
 ```
 agents.example.com {

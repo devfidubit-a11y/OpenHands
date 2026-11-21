@@ -21,6 +21,10 @@ services:
     environment:
       # Public URL the automation service puts in callback links.
       AUTOMATION_BASE_URL: ${PUBLIC_URL:-http://127.0.0.1:8000}
+      # Open Canvas already connected to this container's backend (the session
+      # key is embedded in the page). Only for a loopback-bound port with
+      # nothing public in front of it; see AUTO_LOGIN in .env.example.
+      AGENT_CANVAS_ALLOW_LAN_SESSION_KEY: ${AUTO_LOGIN:-false}
     ports:
       # Loopback by default: put a TLS reverse proxy (Caddy, nginx, Traefik)
       # in front, or set BIND_ADDRESS=0.0.0.0 only on a trusted network.
