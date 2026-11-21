@@ -89,13 +89,22 @@ async function say(chatId, text, extra = {}, agent = null) {
   return sent;
 }
 
+/**
+ * An agent just got new work. Until it is seen running again, a settled
+ * status is the previous turn's: a new turn can report idle before it starts.
+ */
+function markPending(agent) {
+  agent.lastStatus = "pending";
+  agent.seenRunning = false;
+}
+
 function resolveTarget(chatId, ref) {
   return ref ? state.findAgent(chatId, ref) : state.activeAgent(chatId);
 }
 
 async function sendToAgent(chatId, agent, text, replyTo) {
   await server.sendMessage(agent.id, text);
-  agent.lastStatus = "pending";
+  markPending(agent);
   save();
   await say(chatId, `➡️ Enviado a @${agent.name}`, { replyTo });
 }
@@ -139,7 +148,7 @@ async function dispatch(chatId, assignments, lead = null) {
       const existing = lead ? null : state.findAgent(chatId, name);
       if (existing) {
         await server.sendMessage(existing.id, task);
-        existing.lastStatus = "pending";
+        markPending(existing);
         lines.push(`➡️ @${existing.name}: enviado`);
         continue;
       }
@@ -273,7 +282,7 @@ async function handleCommand(chatId, command, args, messageId) {
       results.forEach((result, index) => {
         const agent = chat.agents[index];
         if (result.status === "fulfilled") {
-          agent.lastStatus = "pending";
+          markPending(agent);
           ok.push(`@${agent.name}`);
         } else {
           failed.push(`@${agent.name}`);
@@ -449,7 +458,7 @@ async function handleCallback(query) {
       agent.id,
       buildIntegrationPrompt(results, agent.goal),
     );
-    agent.lastStatus = "pending";
+    markPending(agent);
     save();
     await telegram.answerCallback(query.id, "Enviado al líder");
     return say(chatId, `🧩 @${agent.name} está integrando los resultados.`);
@@ -466,7 +475,7 @@ async function handleCallback(query) {
       ? undefined
       : `Rechazado desde Telegram por ${query.from?.username ?? query.from?.id}`,
   );
-  agent.lastStatus = "pending";
+  markPending(agent);
   save();
   await telegram.answerCallback(query.id, accept ? "Aprobado" : "Rechazado");
   return say(
@@ -483,9 +492,12 @@ async function watchAgents() {
         const info = await server.getConversation(agent.id);
         const next = info?.execution_status;
         const event = statusTransition(agent.lastStatus, next);
+        if (next === "running") agent.seenRunning = true;
+        // A new turn reports idle before it starts running: not a result.
+        if (event === "done" && next === "idle" && !agent.seenRunning) continue;
         if (next) agent.lastStatus = next;
-        // A fast agent can finish between polls; "done" also proves it ran.
-        if (next === "running" || event === "done") agent.seenRunning = true;
+        // A fast agent can finish between polls; "finished" proves it ran.
+        if (event === "done") agent.seenRunning = true;
         if (event === "done") {
           const response = await server.finalResponse(agent.id).catch(() => "");
           await say(
