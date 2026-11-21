@@ -199,6 +199,10 @@ RUN uv tool install "mcp-server-qdrant==0.8.1" && \
 # Pro/Max subscription (the login lands in the claude-login volume). npx in
 # this image does not run the package's postinstall, which leaves its native
 # binary missing, so install it globally and run the installer if needed.
+# Wrangler for Cloudflare Workers/Pages work (cloudflare-wrangler skill). The
+# global install brings the Linux workerd binary; a project's own node_modules
+# installed on macOS would not run here.
+RUN npm install -g "wrangler@4.162.0" && wrangler --version
 RUN npm install -g "@anthropic-ai/claude-code@2.1.325" && \
     (claude --version >/dev/null 2>&1 || \
       node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs") && \

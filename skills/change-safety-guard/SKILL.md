@@ -21,6 +21,11 @@ plainly, and wait for a yes on anything destructive.
      to a real database;
    - CI/CD, deploy, or infrastructure config, and dependency upgrades or
      removals;
+   - deploying or publishing anything (`wrangler deploy`, `versions deploy`,
+     `secret put`, remote D1/KV/R2 writes, `npm publish`, merging PRs);
+   - reinstalling dependencies in a folder mounted from the user's machine
+     (`npm install` there replaces their native binaries). Use a worktree
+     instead;
    - anything outside the task's folder.
 2. Never discard work you didn't create. Uncommitted changes in the working
    tree belong to the user: don't stash, reset, overwrite, or commit them.

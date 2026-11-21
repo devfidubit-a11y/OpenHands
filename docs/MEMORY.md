@@ -95,6 +95,9 @@ Installed on every start, from `skills/` in this repository:
 | `senior-backend` | APIs and services: validation, data and migrations, auth, idempotency, reliability |
 | `change-safety-guard` | Impact analysis before changes; consent required for deletions, secrets, data, infra; backed-up branches |
 | `feature-branch-pr` | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs |
+| `qa-testing` | Reviews and tests code: unit, integration, component, E2E, snapshot, visual regression |
+| `ux-ui-storytelling` | UX/UI design that keeps one narrative across screens, copy and flows |
+| `cloudflare-wrangler` | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent |
 | `qdrant-memory` | How to use the shared memory |
 | `code-review` | From the OpenHands extensions package |
 | `graphify` | Installed by Graphify itself |
@@ -147,3 +150,20 @@ This is guidance plus a tool, not a sandbox: agents can still run shell
 commands. For hard limits, keep `AUTO_LOGIN` off on shared machines, mount
 only the folders agents need (`DOCUMENTS_DIR`), and turn on confirmation for
 risky actions in Canvas.
+
+## Cloudflare
+
+`wrangler` is installed in the image. To let agents use your account, set
+`CLOUDFLARE_API_TOKEN` (scoped to what they need) and `CLOUDFLARE_ACCOUNT_ID`
+in `.env`. The `cloudflare-wrangler` skill keeps work local or on preview
+versions, and requires your consent for deploys, secrets, and remote data.
+
+Projects mounted from macOS (under `/documents` or `/projects`) have macOS
+native binaries in `node_modules` (workerd, esbuild), which don't run in the
+Linux container. Agents work in a git worktree with its own `npm ci` instead
+of reinstalling in your checkout.
+
+Cloudflare's remote MCP servers (bindings, browser rendering, …) authenticate
+with OAuth, and their tokens expire. If they show "failed to start", remove
+them in Canvas → Settings → MCP and add them again, or rely on `wrangler` with
+an API token.
