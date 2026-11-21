@@ -103,8 +103,11 @@ In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
 | `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
 | `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
 
-When an agent finishes, errors, gets stuck or asks for confirmation, the bridge
-posts in the chat. Confirmation requests come with **Approve / Reject** buttons.
+When an agent starts working, the bridge posts "▶️ working", then a short
+"⏳ still working" note every 3 minutes (`TELEGRAM_PROGRESS_MINUTES`, 0 = off)
+that names only the kind of step (running a command, editing files…), never
+the command text. When an agent finishes, errors (with the cause and how to
+fix it), gets stuck or asks for confirmation, the bridge posts in the chat. Confirmation requests come with **Approve / Reject** buttons.
 Every conversation is tagged `source=telegram`, so it also appears in Agent Canvas.
 
 ### Example: a lead that plans and distributes

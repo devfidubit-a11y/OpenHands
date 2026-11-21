@@ -49,6 +49,8 @@ export function loadConfig(env = process.env) {
   // learn the chat id to put in TELEGRAM_ALLOWED_CHAT_IDS.
   const allowedChats = parseIdList(env.TELEGRAM_ALLOWED_CHAT_IDS);
   const pollMs = Number(env.TELEGRAM_BRIDGE_POLL_MS ?? 4000);
+  // Minutes between "still working" notices; 0 turns them off.
+  const progressMin = Number(env.TELEGRAM_PROGRESS_MINUTES ?? 3);
   return {
     token,
     allowedChats,
@@ -66,6 +68,10 @@ export function loadConfig(env = process.env) {
       env.TELEGRAM_API_BASE?.trim() || "https://api.telegram.org"
     ).replace(/\/+$/, ""),
     pollMs: Number.isFinite(pollMs) && pollMs >= 1000 ? pollMs : 4000,
+    progressMs:
+      Number.isFinite(progressMin) && progressMin >= 0
+        ? progressMin * 60_000
+        : 180_000,
   };
 }
 
@@ -441,6 +447,49 @@ export function parseWorkingDir(args) {
   return clean;
 }
 
+const STEP_KINDS = {
+  execute: "ejecutando un comando",
+  read: "leyendo archivos",
+  edit: "editando archivos",
+  delete: "borrando archivos",
+  move: "moviendo archivos",
+  search: "buscando en el código",
+  fetch: "consultando la web",
+  think: "pensando",
+  switch_mode: "cambiando de modo",
+  other: "trabajando",
+};
+const TOOL_NAMES = [
+  [/terminal|bash|execute|cmd/i, "ejecutando un comando"],
+  [/edit|write|str_replace|file_editor/i, "editando archivos"],
+  [/read|view|cat/i, "leyendo archivos"],
+  [/grep|glob|search|find/i, "buscando en el código"],
+  [/browse|fetch|web/i, "consultando la web"],
+  [/think/i, "pensando"],
+  [/task|delegate/i, "delegando en un subagente"],
+];
+
+/**
+ * What an agent's latest step is doing, from its last tool event, without
+ * any command text or arguments (they can hold secrets). "" when unknown.
+ */
+export function describeStep(event) {
+  if (!event) return "";
+  if (event.tool_kind) return STEP_KINDS[event.tool_kind] ?? STEP_KINDS.other;
+  const tool = String(event.tool_name ?? event.action?.kind ?? "");
+  for (const [re, label] of TOOL_NAMES) if (re.test(tool)) return label;
+  return tool ? "trabajando" : "";
+}
+
+/** "3 min", "1 h 5 min" from milliseconds. */
+export function formatElapsed(ms) {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
 /** A short, actionable explanation for a conversation error, in Spanish. */
 export function explainError(error) {
   if (!error) return "";
@@ -557,6 +606,18 @@ export class AgentServerClient {
       `/api/conversations/${id}/agent_final_response`,
     );
     return result?.response ?? "";
+  }
+
+  /** The latest tool step (ACP tool call or OpenHands action), or null. */
+  async lastStep(id) {
+    for (const kind of ["ACPToolCallEvent", "ActionEvent"]) {
+      const page = await this.request(
+        "GET",
+        `/api/conversations/${id}/events/search?kind=${kind}&sort_order=TIMESTAMP_DESC&limit=1`,
+      );
+      if (page?.items?.[0]) return page.items[0];
+    }
+    return null;
   }
 
   /** The conversation's most recent error event, or null. */

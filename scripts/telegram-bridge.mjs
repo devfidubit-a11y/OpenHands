@@ -18,7 +18,9 @@ import {
   buildIntegrationPrompt,
   buildLeadPrompt,
   buildMemberPrompt,
+  describeStep,
   explainError,
+  formatElapsed,
   isAuthorized,
   loadConfig,
   parseAssignments,
@@ -96,6 +98,29 @@ async function say(chatId, text, extra = {}, agent = null) {
 function markPending(agent) {
   agent.lastStatus = "pending";
   agent.seenRunning = false;
+  delete agent.runningSince;
+  delete agent.lastProgressAt;
+}
+
+/** "Started" once per turn, then a "still working" note every progressMs. */
+async function reportProgress(chatId, agent) {
+  const now = Date.now();
+  if (!agent.runningSince) {
+    agent.runningSince = now;
+    agent.lastProgressAt = now;
+    await say(chatId, `▶️ @${agent.name} está trabajando…`, {}, agent);
+    return;
+  }
+  if (!config.progressMs || now - agent.lastProgressAt < config.progressMs)
+    return;
+  agent.lastProgressAt = now;
+  const step = describeStep(await server.lastStep(agent.id).catch(() => null));
+  await say(
+    chatId,
+    `⏳ @${agent.name} sigue trabajando (${formatElapsed(now - agent.runningSince)})${step ? `, ahora ${step}` : ""}.`,
+    {},
+    agent,
+  );
 }
 
 function resolveTarget(chatId, ref) {
@@ -492,10 +517,15 @@ async function watchAgents() {
         const info = await server.getConversation(agent.id);
         const next = info?.execution_status;
         const event = statusTransition(agent.lastStatus, next);
-        if (next === "running") agent.seenRunning = true;
+        if (next === "running") {
+          agent.seenRunning = true;
+          await reportProgress(chatId, agent);
+        }
         // A new turn reports idle before it starts running: not a result.
         if (event === "done" && next === "idle" && !agent.seenRunning) continue;
         if (next) agent.lastStatus = next;
+        // Any non-running state ends the turn: the next run announces itself.
+        if (next && next !== "running") delete agent.runningSince;
         // A fast agent can finish between polls; "finished" proves it ran.
         if (event === "done") agent.seenRunning = true;
         if (event === "done") {

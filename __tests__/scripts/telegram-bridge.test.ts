@@ -7,7 +7,9 @@ import {
   AgentServerClient,
   BridgeState,
   chunkText,
+  describeStep,
   explainError,
+  formatElapsed,
   isAuthorized,
   loadConfig,
   buildIntegrationPrompt,
@@ -406,5 +408,35 @@ describe("BridgeState.switchBot", () => {
     const fresh = new BridgeState();
     expect(fresh.switchBot(111)).toBe(false);
     expect(fresh.botId).toBe(111);
+  });
+});
+
+describe("progress notices", () => {
+  it("names the kind of step without any command text", () => {
+    expect(
+      describeStep({
+        kind: "ACPToolCallEvent",
+        tool_kind: "execute",
+        title: "K=$(cat ~/.openhands/agent-canvas/api-key.txt); curl …",
+      }),
+    ).toBe("ejecutando un comando");
+    expect(
+      describeStep({ kind: "ActionEvent", tool_name: "file_editor" }),
+    ).toBe("editando archivos");
+    expect(describeStep(null)).toBe("");
+  });
+
+  it("formats elapsed time", () => {
+    expect(formatElapsed(20_000)).toBe("1 min");
+    expect(formatElapsed(7 * 60_000)).toBe("7 min");
+    expect(formatElapsed(65 * 60_000)).toBe("1 h 5 min");
+  });
+
+  it("defaults to a notice every 3 minutes and allows turning it off", () => {
+    expect(loadConfig({ TELEGRAM_BOT_TOKEN: "t" }).progressMs).toBe(180_000);
+    expect(
+      loadConfig({ TELEGRAM_BOT_TOKEN: "t", TELEGRAM_PROGRESS_MINUTES: "0" })
+        .progressMs,
+    ).toBe(0);
   });
 });
