@@ -47,6 +47,10 @@ mkdir -p projects && sudo chown 1000:1000 projects   # the container runs as uid
 Edit `.env`. At minimum set `AGENT_CANVAS_IMAGE` to the tag in `IMAGE`, and set
 `PUBLIC_URL`. Leave the keys empty to have them generated and persisted.
 
+Agents write their files to `PROJECTS_DIR` (`./projects` by default), mounted
+at `/projects`. Each Canvas conversation gets its own subfolder, named after the
+conversation id. Back this folder up together with the volumes.
+
 ## 3. Start it
 
 ```bash

@@ -47,9 +47,11 @@ COPY . .
 # Canvas under the Cloud subpath instead of a dedicated hostname.
 # VITE_WORKING_DIR is the base directory for per-conversation working dirs. It
 # must be absolute and inside a volume so they outlive the container (#18960).
+# /projects is that volume, and compose.yml binds it to a host folder
+# (PROJECTS_DIR), so the files agents write are visible on the host.
 ARG VITE_POSTHOG_API_KEY=""
 ARG VITE_BASE_PATH="/canvas"
-ARG VITE_WORKING_DIR="/home/openhands/.openhands/agent-canvas/workspaces"
+ARG VITE_WORKING_DIR="/projects"
 ENV VITE_POSTHOG_API_KEY=${VITE_POSTHOG_API_KEY}
 ENV VITE_BASE_PATH=${VITE_BASE_PATH}
 ENV VITE_WORKING_DIR=${VITE_WORKING_DIR}
