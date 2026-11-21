@@ -61,7 +61,10 @@ describe("useSearchProviders — local backend", () => {
     // Assert: the picker must surface every provider the backend reports.
     const names = result.current.data?.map((provider) => provider.name) ?? [];
     expect(names).toContain("openrouter");
-    expect(names).toHaveLength(providers.length + 1); // + the verified "openhands"
+    // + the verified "openhands", and "anthropic", which Canvas always offers
+    // with the current Claude models even when the server lists none.
+    expect(names).toHaveLength(providers.length + 2);
+    expect(names).toContain("anthropic");
   });
 });
 

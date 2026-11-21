@@ -69,6 +69,12 @@
 #                          (default: ~/.openhands/workspaces)
 #   XDG_CONFIG_HOME     – Browser-tool configuration directory
 #                          (default: $HOME/.config; must be writable)
+#   TELEGRAM_BOT_TOKEN   – If set, also starts the Telegram bridge
+#                          (docs/TELEGRAM.md) against the in-container agent
+#                          server. TELEGRAM_ALLOWED_CHAT_IDS and the other
+#                          TELEGRAM_* / OH_AGENT_PROFILE vars pass through;
+#                          OH_WORKING_DIR defaults to /projects. A crashed
+#                          bridge restarts after 5 s and never stops the stack.
 #   Any agent-server or automation env vars are passed through.
 # ═══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -838,6 +844,30 @@ if [ -n "${PUBLIC_MODE_PORT:-}" ]; then
     --route "/docs=http://127.0.0.1:${AGENT_SERVER_PORT}" \
     --route "/redoc=http://127.0.0.1:${AGENT_SERVER_PORT}" \
     --route "/openapi.json=http://127.0.0.1:${AGENT_SERVER_PORT}" &
+  PIDS+=($!)
+fi
+
+# ── 6. (Optional) Telegram bridge ───────────────────────────────────────────
+# Talks to the agent-server directly on loopback with the effective session
+# key, passed in the environment rather than in process arguments. Its state
+# (chat → conversation map) lives in the persisted state directory.
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  log "Starting Telegram bridge..."
+  (
+    child=""
+    trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' SIGINT SIGTERM
+    while :; do
+      OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+      OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+      OH_WORKING_DIR="${OH_WORKING_DIR:-/projects}" \
+      TELEGRAM_BRIDGE_STATE="${TELEGRAM_BRIDGE_STATE:-${STATE_DIR}/telegram-bridge-state.json}" \
+        node /opt/agent-canvas/telegram-bridge.mjs &
+      child=$!
+      wait "$child" || true
+      log_error "Telegram bridge exited; restarting in 5s"
+      sleep 5 & wait $!
+    done
+  ) &
   PIDS+=($!)
 fi
 

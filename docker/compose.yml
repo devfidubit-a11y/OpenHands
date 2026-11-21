@@ -1,0 +1,51 @@
+# Production-style deployment of the all-in-one agent-canvas image.
+#
+#   1. Build or load the image (see docs/DEPLOY.md):
+#        node scripts/docker-package.mjs                 # build + save a .tar.gz
+#        docker load -i agent-canvas-<tag>.tar.gz        # on the target server
+#   2. cp docker/.env.example docker/.env   and edit it
+#   3. docker compose -f docker/compose.yml --env-file docker/.env up -d
+#
+# Nothing here pins versions: those come from config/defaults.json at build time.
+name: agent-canvas
+
+services:
+  agent-canvas:
+    image: ${AGENT_CANVAS_IMAGE:-agent-canvas:local}
+    container_name: agent-canvas
+    restart: unless-stopped
+    init: false # the image already runs tini as PID 1
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Public URL the automation service puts in callback links.
+      AUTOMATION_BASE_URL: ${PUBLIC_URL:-http://127.0.0.1:8000}
+    ports:
+      # Loopback by default: put a TLS reverse proxy (Caddy, nginx, Traefik)
+      # in front, or set BIND_ADDRESS=0.0.0.0 only on a trusted network.
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8000}:8000"
+    volumes:
+      - openhands-state:/home/openhands/.openhands
+      - claude-login:/home/openhands/.claude
+      - ${PROJECTS_DIR:-./projects}:/projects
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8000/alive').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  openhands-state:
+  claude-login:

@@ -25,7 +25,11 @@ ARG AGENT_SERVER_VERSION
 ARG AUTOMATION_VERSION
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
-FROM node:24.22.1-slim AS frontend-build
+# Build stages run on the build host's own platform: their output (static
+# assets, pure-JS modules, a generated env file) does not depend on the CPU, so
+# a cross-build such as `--platform linux/amd64` on an arm64 Mac only emulates
+# the final stage instead of the whole npm install and Vite build.
+FROM --platform=$BUILDPLATFORM node:24.22.1-slim AS frontend-build
 
 WORKDIR /build
 
@@ -53,7 +57,7 @@ RUN npm run build
 
 # ── Stage 1b: Generate shell-sourceable defaults from config/defaults.json ──
 # This avoids needing jq/python at container runtime to parse the JSON.
-FROM node:24.22.1-slim AS config-gen
+FROM --platform=$BUILDPLATFORM node:24.22.1-slim AS config-gen
 COPY config/defaults.json /tmp/
 RUN node -e " \
   const c = JSON.parse(require('fs').readFileSync('/tmp/defaults.json','utf-8')); \
@@ -173,6 +177,11 @@ COPY --from=frontend-build /build/node_modules/@openhands/extensions /opt/agent-
 # emit the agent's <RUNTIME_SERVICES> block; same builder the dev stack uses).
 COPY scripts/runtime-services-info.mjs /opt/agent-canvas/runtime-services-info.mjs
 
+# Optional Telegram bridge (docs/TELEGRAM.md); entrypoint.sh starts it only
+# when TELEGRAM_BOT_TOKEN is set.
+COPY scripts/telegram-bridge.mjs /opt/agent-canvas/telegram-bridge.mjs
+COPY scripts/telegram-bridge-lib.mjs /opt/agent-canvas/telegram-bridge-lib.mjs
+
 # Persisted conversations created before the client_tools migration still
 # import canvas_ui_tool by qualname. Keep the compatibility module available;
 # new conversations define canvas_ui_control through a JSON client tool.
@@ -192,18 +201,24 @@ RUN mkdir -p /home/openhands/.openhands/agent-canvas/conversations \
              /home/openhands/.openhands/agent-canvas/bash_events \
              /home/openhands/.openhands/agent-canvas/workspaces \
              /home/openhands/.openhands/automation \
+             /home/openhands/.claude \
              /projects && \
     chmod 755 /home/openhands && \
-    chown -R openhands:openhands /home/openhands/.openhands /projects
+    chown -R openhands:openhands /home/openhands/.openhands /home/openhands/.claude /projects
 
 USER openhands
+
+# Keep all Claude Code state (subscription login, settings) in one directory
+# so a single volume preserves a `claude` login across container recreation.
+ENV CLAUDE_CONFIG_DIR=/home/openhands/.claude
 
 # Persistence volumes:
 #   /home/openhands/.openhands — settings, secrets, conversations, automation DB
 #   /projects                  — user code the agent can read/edit
+#   /home/openhands/.claude    — Claude Code login for the Claude Code ACP agent
 # Bind-mount these for data to survive container restarts:
 #   docker run -v ~/.openhands:/home/openhands/.openhands -v ~/projects:/projects ...
-VOLUME ["/home/openhands/.openhands", "/projects"]
+VOLUME ["/home/openhands/.openhands", "/projects", "/home/openhands/.claude"]
 
 # The entrypoint starts all services and the ingress proxy.
 # Port 8000 is the unified entry point.

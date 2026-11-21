@@ -37,3 +37,14 @@ Thumbs.db
 artifacts/
 *.tgz
 *.log
+
+# macOS AppleDouble files (created on exFAT/FAT/network volumes); they are not
+# valid source and break the TypeScript/ESLint tooling inside the build.
+._*
+**/._*
+
+# Telegram bridge runtime state
+.telegram-bridge-state.json*
+
+# Deploy bundles
+deploy-bundle*/

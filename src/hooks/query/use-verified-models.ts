@@ -1,6 +1,7 @@
 import { LLMMetadataClient } from "@openhands/typescript-client/clients";
 import { getAgentServerClientOptions } from "#/api/agent-server-client-options";
 import { getActiveBackend } from "#/api/backend-registry/active-store";
+import { withCurrentClaudeModels } from "#/constants/anthropic-models";
 
 export const VERIFIED_MODELS_QUERY_KEY = ["config", "verified-models"] as const;
 export const VERIFIED_MODELS_STALE_TIME = 1000 * 60 * 5;
@@ -18,5 +19,5 @@ export async function fetchVerifiedModelsByProvider(): Promise<
     return {};
   }
   const client = new LLMMetadataClient(getAgentServerClientOptions());
-  return (await client.getVerifiedModels()) ?? {};
+  return withCurrentClaudeModels((await client.getVerifiedModels()) ?? {});
 }
