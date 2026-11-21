@@ -417,7 +417,7 @@ export function buildMemberPrompt({ name, lead, goal, subtask }) {
     "Only change what your subtask needs; other agents work on the rest in",
     "parallel. Use the expert skills that fit your subtask (senior-frontend,",
     "senior-backend, component-design-patterns, ux-ui-storytelling, ui-design,",
-    "ux-design, qa-testing, cloudflare-wrangler, senior-devops,",
+    "ux-design, qa-testing, cloudflare-wrangler, docker-containers, senior-devops,",
     "senior-architect), and add or update tests for what you change.",
     "",
     "Follow the change-safety-guard skill: never delete, overwrite or touch",

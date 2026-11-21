@@ -40,7 +40,7 @@ rsync -av deploy-bundle/ user@server:/opt/agent-canvas/
 ```bash
 cd /opt/agent-canvas
 sha256sum -c SHA256SUMS
-for f in *.tar.gz; do docker load -i "$f"; done   # Agent Canvas + Qdrant
+for f in *.tar.gz; do docker load -i "$f"; done   # Agent Canvas, Qdrant, Docker engine
 cp .env.example .env
 mkdir -p projects && sudo chown 1000:1000 projects   # the container runs as uid 1000
 ```

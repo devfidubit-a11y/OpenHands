@@ -28,6 +28,9 @@ services:
       # Shared long-term memory for all agents (docs/MEMORY.md). Empty
       # disables the memory MCP registration.
       QDRANT_URL: ${QDRANT_URL-http://qdrant:6333}
+      # Private Docker engine for agents (docker-containers skill). Set
+      # COMPOSE_PROFILES=docker and AGENT_DOCKER_HOST=tcp://docker:2375 in .env.
+      DOCKER_HOST: ${AGENT_DOCKER_HOST:-}
     ports:
       # Loopback by default: put a TLS reverse proxy (Caddy, nginx, Traefik)
       # in front, or set BIND_ADDRESS=0.0.0.0 only on a trusted network.
@@ -82,7 +85,38 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Docker-in-Docker: an isolated engine where agents build images and run
+  # containers for tests. It never sees the host's Docker or its containers.
+  # Opt-in (profile "docker"). Privileged, and reachable only on the compose
+  # network, so it is not published on the host.
+  docker:
+    image: docker:29.9.3-dind
+    profiles: ["docker"]
+    container_name: agent-canvas-docker
+    privileged: true
+    restart: unless-stopped
+    environment:
+      # Plain TCP on the private compose network; no host port is published.
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - docker-data:/var/lib/docker
+      # Same paths as in agent-canvas, so `docker run -v /projects/x:/app` works.
+      - ${PROJECTS_DIR:-./projects}:/projects
+      - ${DOCUMENTS_DIR:-./documents}:/documents
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   openhands-state:
   claude-login:
   qdrant-data:
+  docker-data:

@@ -97,6 +97,7 @@ Installed on every start, from `skills/` in this repository:
 | `feature-branch-pr` | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs |
 | `qa-testing` | Reviews and tests code: unit, integration, API/route handlers, component, E2E, smoke, snapshot, visual regression, performance and Core Web Vitals |
 | `ux-ui-storytelling` | UX/UI design that keeps one narrative across screens, copy and flows |
+| `docker-containers` | Dockerize apps, Compose, isolated test containers on a private Docker engine, container deploys (with consent) |
 | `cloudflare-wrangler` | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent |
 | `qdrant-memory` | How to use the shared memory |
 | `code-review` | From the OpenHands extensions package |
@@ -167,3 +168,16 @@ Cloudflare's remote MCP servers (bindings, browser rendering, …) authenticate
 with OAuth, and their tokens expire. If they show "failed to start", remove
 them in Canvas → Settings → MCP and add them again, or rely on `wrangler` with
 an API token.
+
+## Private Docker engine
+
+With `COMPOSE_PROFILES=docker` and `AGENT_DOCKER_HOST=tcp://docker:2375` in
+`.env`, compose runs a Docker-in-Docker service (`agent-canvas-docker`). Agents
+use it to build images and run throwaway containers for tests. It is isolated
+from the host: agents can't see or stop your other containers. Ports of
+containers started there are reached at `docker:<port>`. `/projects` and
+`/documents` are mounted at the same paths, so bind mounts work.
+
+It runs privileged and isn't published on the host. Leave the profile off on
+servers where agents shouldn't run containers. Free space with
+`docker exec agent-canvas-docker docker system prune -af`.
