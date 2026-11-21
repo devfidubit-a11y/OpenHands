@@ -520,6 +520,42 @@ export OH_EXTRA_PYTHON_PATH="${OH_EXTRA_PYTHON_PATH:-/opt/agent-canvas/tools}"
 export EXTENSIONS_PATH="${EXTENSIONS_PATH:-/opt/agent-canvas/node_modules/@openhands/extensions}"
 AGENT_SERVER_IMPORT_MODULES="canvas_ui_tool"
 
+# Extra skills (senior-devops, senior-architect, ux/ui-design, impeccable,
+# qdrant-memory) plus graphify's own skill. ~/.agents/skills is read by the
+# OpenHands agent and forwarded by the agent-server to ACP agents; Claude Code
+# also gets full copies (with their reference files) in its own skills dir,
+# together with the extensions package's code-review skill. Managed copies are
+# replaced on every start; other skills in those dirs are left alone.
+sync_skill() {
+  local src="$1" dest_dir="$2" name
+  name="$(basename "$src")"
+  mkdir -p "$dest_dir" && rm -rf "${dest_dir:?}/$name" && cp -R "$src" "$dest_dir/$name"
+}
+AGENTS_SKILLS_DIR="$HOME/.agents/skills"
+CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+if [ -d /opt/agent-canvas/skills ]; then
+  for skill in /opt/agent-canvas/skills/*/; do
+    sync_skill "${skill%/}" "$AGENTS_SKILLS_DIR" || log "WARNING: could not install skill ${skill}"
+    sync_skill "${skill%/}" "$CLAUDE_SKILLS_DIR" || log "WARNING: could not install skill ${skill} for Claude Code"
+  done
+fi
+if [ -d "$EXTENSIONS_PATH/skills/code-review" ]; then
+  sync_skill "$EXTENSIONS_PATH/skills/code-review" "$CLAUDE_SKILLS_DIR" || true
+fi
+if command -v graphify >/dev/null 2>&1; then
+  if (cd "$HOME" && graphify install --platform agents >/dev/null 2>&1) &&
+    [ -d "$AGENTS_SKILLS_DIR/graphify" ]; then
+    sync_skill "$AGENTS_SKILLS_DIR/graphify" "$CLAUDE_SKILLS_DIR" || true
+  else
+    log "WARNING: graphify skill install failed"
+  fi
+fi
+
+# Embedding model cache for the Qdrant memory MCP server, kept in the state
+# volume so the model is downloaded once, not on every container recreate.
+export FASTEMBED_CACHE_PATH="${FASTEMBED_CACHE_PATH:-${OPENHANDS_DIR}/cache/fastembed}"
+mkdir -p "$FASTEMBED_CACHE_PATH" 2>/dev/null || true
+
 # Both backends default LOG_LEVEL to INFO, at which level they emit
 # library-internal startup chatter — the automation service alone prints
 # several hundred lines of SQLAlchemy ORM model-mapping output — that buries
@@ -866,6 +902,41 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
       wait "$child" || true
       log_error "Telegram bridge exited; restarting in 5s"
       sleep 5 & wait $!
+    done
+  ) &
+  PIDS+=($!)
+fi
+
+# ── 7. (Optional) Shared memory ─────────────────────────────────────────────
+# With QDRANT_URL set (compose.yml runs a Qdrant service), register the Qdrant
+# memory MCP server with the agent-server once. One-shot and never fatal; not
+# tracked in PIDS because it exits on its own.
+if [ -n "${QDRANT_URL:-}" ]; then
+  OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+  OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+    node /opt/agent-canvas/register-memory-mcp.mjs &
+fi
+
+# ── 8. (Optional) Memory watcher ────────────────────────────────────────────
+# Stores a summary of each finished conversation in the shared memory, and
+# installs graphify's git hooks in repositories under /projects so every
+# commit re-indexes the code graph. Turn parts off with
+# MEMORY_AUTO_SUMMARY=false / GRAPHIFY_AUTO_HOOKS=false. Restarts on its own
+# if it crashes; never takes the container down.
+if [ "${MEMORY_AUTO_SUMMARY:-true}" != "false" ] || [ "${GRAPHIFY_AUTO_HOOKS:-true}" != "false" ]; then
+  (
+    child=""
+    trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' SIGINT SIGTERM
+    while :; do
+      OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+      OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+      GRAPHIFY_PROJECTS_DIR="${GRAPHIFY_PROJECTS_DIR:-/projects}" \
+      MEMORY_WATCHER_STATE="${MEMORY_WATCHER_STATE:-${STATE_DIR}/memory-watcher-state.json}" \
+        node /opt/agent-canvas/memory-watcher.mjs &
+      child=$!
+      wait "$child" && exit 0 # exit 0 = nothing enabled
+      log_error "Memory watcher exited; restarting in 30s"
+      sleep 30 & wait $!
     done
   ) &
   PIDS+=($!)

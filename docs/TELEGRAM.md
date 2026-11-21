@@ -89,6 +89,9 @@ In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
 | --- | --- |
 | `/new <task>` | Starts a new agent with the task and makes it the active one. |
 | `/new @name <task>` | The same, with a name you can address (`@name`). |
+| `/team [@name] <task>` | Starts a **lead** agent that studies the project and splits the work into up to 6 subtasks. Its plan comes with a **Distribute** button that starts one sub-agent per subtask. |
+| `/dispatch` + lines | Hands out tasks yourself, one per line: `@name task`. An existing agent with that name gets a message; a new name starts a new agent. |
+| `/dir [path]` | Shows or sets the folder the next agents work in, e.g. `/dir /documents/dracma-web`. `/dir reset` goes back to the default. |
 | `/agents` | Lists this chat's agents with their status. ▶️ marks the active one. |
 | `/use <name or number>` | Changes the active agent. |
 | `@name <message>` | Sends the message to that agent. |
@@ -104,11 +107,30 @@ When an agent finishes, errors, gets stuck or asks for confirmation, the bridge
 posts in the chat. Confirmation requests come with **Approve / Reject** buttons.
 Every conversation is tagged `source=telegram`, so it also appears in Agent Canvas.
 
-### Example: coordinating a small team
+### Example: a lead that plans and distributes
 
 ```
-/new @api add a /health endpoint with tests
-/new @web show the API health on the dashboard
+/dir /documents/dracma-web
+/team add a contact form with validation, an API endpoint and tests
+```
+
+1. `@lider` studies the project and replies with a plan, one line per sub-agent
+   (`@api: …`, `@web: …`, `@tests: …`).
+2. Press **🚀 Distribute**. Each sub-agent starts with its subtask, the team goal,
+   and an instruction to stay inside its part.
+3. Each sub-agent posts its result when it finishes. When all of them are done,
+   press **🧩 Ask the lead to integrate**. The lead gets every result, checks that
+   the pieces fit together, and replies with a final summary.
+
+### Example: distributing by hand
+
+```
+/dispatch
+@api add a /health endpoint with tests
+@web show the API health on the dashboard
+```
+
+```
 @web the endpoint is GET /health and returns {"ok": true}
 /all when you are done, open a PR and paste the link here
 ```

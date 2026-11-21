@@ -128,6 +128,42 @@ await Promise.all([
   saved,
 ]);
 
+// Third-party images compose.yml runs next to ours (e.g. qdrant), so the
+// server needs no registry access either.
+const composeText = readFileSync(
+  join(projectRoot, "docker", "compose.yml"),
+  "utf-8",
+);
+const extraImages = [
+  ...composeText.matchAll(/^\s+image:\s+([^\s$]\S*)\s*$/gm),
+].map((m) => m[1]);
+const extraImageFiles = [];
+for (const image of extraImages) {
+  run("docker", ["pull", "--platform", options.platform, image]);
+  const file = `${image.replace(/[^a-zA-Z0-9._-]+/g, "-")}-${arch}.tar.gz`;
+  console.log(`\nSaving ${image} → ${join(options.out, file)}...`);
+  const extraSave = spawn(
+    "docker",
+    ["save", "--platform", options.platform, image],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const extraSaved = new Promise((resolve, reject) => {
+    extraSave.on("error", reject);
+    extraSave.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`)),
+    );
+  });
+  await Promise.all([
+    pipeline(
+      extraSave.stdout,
+      createGzip({ level: 6 }),
+      createWriteStream(join(outDir, file)),
+    ),
+    extraSaved,
+  ]);
+  extraImageFiles.push(file);
+}
+
 copyFileSync(
   join(projectRoot, "docker", "compose.yml"),
   join(outDir, "compose.yml"),
@@ -137,14 +173,17 @@ copyFileSync(
   join(outDir, ".env.example"),
 );
 copyFileSync(join(projectRoot, "docs", "DEPLOY.md"), join(outDir, "DEPLOY.md"));
+copyFileSync(join(projectRoot, "docs", "MEMORY.md"), join(outDir, "MEMORY.md"));
 writeFileSync(join(outDir, "IMAGE"), `${options.tag}\n`);
 
 const sums = [];
 for (const file of [
   imageFile,
+  ...extraImageFiles,
   "compose.yml",
   ".env.example",
   "DEPLOY.md",
+  "MEMORY.md",
   "IMAGE",
 ]) {
   const hash = createHash("sha256");

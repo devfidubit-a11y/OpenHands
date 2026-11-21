@@ -6,6 +6,7 @@ This directory contains the project documentation.
 - [Using ACP agents](./ACP_AGENTS.md): onboard and configure external agents (Claude Code, Codex, Gemini CLI, Pi, OpenCode).
 - [Coordinate agents from Telegram](./TELEGRAM.md): run several agents from a Telegram chat, and use Claude with an API key or a Pro/Max subscription.
 - [Deploy on another server](./DEPLOY.md): package the all-in-one Docker image into a bundle and run it with Docker Compose.
+- [Shared memory, code graph, and skills](./MEMORY.md): Qdrant memory, Graphify, and the extra skills in the Docker image.
 - [Development guide](./DEVELOPMENT.md)
 - [Canvas Extensions manual testing](./CANVAS_EXTENSIONS_TESTING.md)
 - [Self-hosting guide](./SELF_HOSTING.md)

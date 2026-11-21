@@ -256,6 +256,125 @@ export class BridgeState {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Teams: a lead agent plans, the bridge hands subtasks to sub-agents.
+// ---------------------------------------------------------------------------
+
+export const MAX_TEAM_SIZE = 6;
+const ASSIGNMENT_RE =
+  /^\s*(?:[-*•]|\d+[.)])?\s*@([a-z0-9][a-z0-9_-]{0,31})\s*(?::|-|—|–)?\s+(\S[\s\S]*)$/i;
+
+/**
+ * Parse task assignments, one per line: `@name: task` (also `- @name task`,
+ * `1. @name — task`). Assignments are read from the largest block of
+ * consecutive assignment lines (blank lines allowed; the last block wins a
+ * tie), so a stray `@mention` in the prose before a plan is not picked up.
+ * A name used twice keeps its first task. Returns [{ name, task }].
+ */
+export function parseAssignments(text, max = MAX_TEAM_SIZE) {
+  const groups = [];
+  let current = [];
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const match = ASSIGNMENT_RE.exec(line.replace(/\*\*|`/g, ""));
+    if (match) {
+      current.push({ name: match[1].toLowerCase(), task: match[2].trim() });
+    } else if (current.length) {
+      groups.push(current);
+      current = [];
+    }
+  }
+  if (current.length) groups.push(current);
+  const block = groups.reduce(
+    (best, group) => (group.length >= best.length ? group : best),
+    [],
+  );
+  const seen = new Set();
+  const result = [];
+  for (const { name, task } of block) {
+    if (!task || seen.has(name)) continue;
+    seen.add(name);
+    result.push({ name, task });
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
+/** Instructions for the lead agent of `/team`. */
+export function buildLeadPrompt(task, max = MAX_TEAM_SIZE) {
+  return [
+    "You are the lead of a small team of AI agents coordinated from Telegram.",
+    "Study the project and the request below, then split the work into at most",
+    `${max} independent subtasks that different agents can do in parallel`,
+    "without editing the same files. Do not do the work yourself yet.",
+    "",
+    "End your answer with the plan, one line per subtask, exactly like:",
+    "@short-name: what this agent must do, which files or area, and what done looks like",
+    "",
+    "Names: lowercase letters, digits, - or _. If the work is too small to split,",
+    "give a single line.",
+    "",
+    `Request: ${task}`,
+  ].join("\n");
+}
+
+/** First message for a sub-agent created from a team plan. */
+export function buildMemberPrompt({ name, lead, goal, subtask }) {
+  return [
+    `You are @${name}, a member of a team led by @${lead}, coordinated from Telegram.`,
+    goal ? `Team goal: ${goal}` : "",
+    `Your subtask: ${subtask}`,
+    "",
+    "Only change what your subtask needs; other agents work on the rest in",
+    "parallel. When you finish, reply with a short summary of what you changed",
+    "and anything the lead must know.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Message asking the lead to integrate the team's results. */
+export function buildIntegrationPrompt(results) {
+  return [
+    "Your team finished. Here is what each agent reported:",
+    "",
+    ...results.map(
+      ({ name, response }) => `@${name}:\n${response || "(no answer)"}\n`,
+    ),
+    "Review and integrate the results, check that the pieces fit together,",
+    "fix conflicts, and reply with a final summary for the user.",
+  ].join("\n");
+}
+
+const DONE_STATUSES = new Set(["finished", "idle"]);
+const FAILED_STATUSES = new Set(["error", "stuck"]);
+
+/**
+ * True once every member of the lead's team has stopped working. A member
+ * counts as done only after it was seen running (a new conversation can
+ * report idle before it starts), or when it failed.
+ */
+export function teamDone(agents, leadId) {
+  const members = agents.filter((agent) => agent.team === leadId);
+  return (
+    members.length > 0 &&
+    members.every(
+      (agent) =>
+        FAILED_STATUSES.has(agent.lastStatus) ||
+        (agent.seenRunning && DONE_STATUSES.has(agent.lastStatus)),
+    )
+  );
+}
+
+/** Normalize a `/dir` argument: absolute path without trailing slashes. */
+export function parseWorkingDir(args) {
+  const value = String(args ?? "").trim();
+  if (!value.startsWith("/") || value.includes("\0")) return null;
+  const clean = value.replace(/\/+$/, "") || "/";
+  if (clean.split("/").includes("..")) return null;
+  return clean;
+}
+
 /**
  * Decides what to tell the chat when an agent's execution status changes.
  * Returns `null` when nothing should be posted.

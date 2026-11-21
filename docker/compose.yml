@@ -25,6 +25,9 @@ services:
       # key is embedded in the page). Only for a loopback-bound port with
       # nothing public in front of it; see AUTO_LOGIN in .env.example.
       AGENT_CANVAS_ALLOW_LAN_SESSION_KEY: ${AUTO_LOGIN:-false}
+      # Shared long-term memory for all agents (docs/MEMORY.md). Empty
+      # disables the memory MCP registration.
+      QDRANT_URL: ${QDRANT_URL-http://qdrant:6333}
     ports:
       # Loopback by default: put a TLS reverse proxy (Caddy, nginx, Traefik)
       # in front, or set BIND_ADDRESS=0.0.0.0 only on a trusted network.
@@ -33,6 +36,10 @@ services:
       - openhands-state:/home/openhands/.openhands
       - claude-login:/home/openhands/.claude
       - ${PROJECTS_DIR:-./projects}:/projects
+      # Optional extra host folder agents can read and write, e.g. your
+      # Documents (DOCUMENTS_DIR in .env). Use /dir in Telegram, or open it as
+      # the workspace in Canvas, to work there.
+      - ${DOCUMENTS_DIR:-./documents}:/documents
     healthcheck:
       test:
         - CMD
@@ -43,6 +50,9 @@ services:
       timeout: 10s
       retries: 5
       start_period: 180s
+    depends_on:
+      qdrant:
+        condition: service_started
     stop_grace_period: 15s
     logging:
       driver: json-file
@@ -50,6 +60,29 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  # Vector store behind the agents' shared memory. Not published on the host:
+  # only the agent-canvas container reaches it, over the compose network.
+  qdrant:
+    image: qdrant/qdrant:v1.20.1
+    container_name: agent-canvas-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/6333"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   openhands-state:
   claude-login:
+  qdrant-data:

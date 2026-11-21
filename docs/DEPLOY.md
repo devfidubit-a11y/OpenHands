@@ -20,6 +20,7 @@ This creates `deploy-bundle/` with:
 | File | What it is |
 | --- | --- |
 | `agent-canvas-<version>-<arch>.tar.gz` | The image |
+| `qdrant-qdrant-<version>-<arch>.tar.gz` | Qdrant, for the agents' shared memory ([MEMORY.md](MEMORY.md)) |
 | `compose.yml`, `.env.example` | Deployment files |
 | `DEPLOY.md` | This guide |
 | `IMAGE`, `SHA256SUMS` | Image tag and checksums |
@@ -39,7 +40,7 @@ rsync -av deploy-bundle/ user@server:/opt/agent-canvas/
 ```bash
 cd /opt/agent-canvas
 sha256sum -c SHA256SUMS
-docker load -i agent-canvas-*.tar.gz
+for f in *.tar.gz; do docker load -i "$f"; done   # Agent Canvas + Qdrant
 cp .env.example .env
 mkdir -p projects && sudo chown 1000:1000 projects   # the container runs as uid 1000
 ```
@@ -104,6 +105,12 @@ or a VPN such as Tailscale.
 - **Telegram:** set `TELEGRAM_BOT_TOKEN`, run `docker compose up -d`, send
   `/whoami` to the bot, put the id in `TELEGRAM_ALLOWED_CHAT_IDS`, and
   `docker compose up -d` again. See [TELEGRAM.md](TELEGRAM.md).
+
+## Memory and skills
+
+Compose also runs Qdrant as shared memory for all agents. The image includes
+Graphify and extra skills (DevOps, architecture, UX/UI, impeccable,
+code-review). See [MEMORY.md](MEMORY.md).
 
 ## Operations
 

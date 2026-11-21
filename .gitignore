@@ -55,3 +55,4 @@ build-fresh/
 # Deploy bundles produced by scripts/docker-package.mjs
 /deploy-bundle*/
 /docker/projects/
+/docker/documents/

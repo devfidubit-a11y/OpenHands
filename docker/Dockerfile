@@ -184,6 +184,22 @@ COPY scripts/runtime-services-info.mjs /opt/agent-canvas/runtime-services-info.m
 COPY scripts/telegram-bridge.mjs /opt/agent-canvas/telegram-bridge.mjs
 COPY scripts/telegram-bridge-lib.mjs /opt/agent-canvas/telegram-bridge-lib.mjs
 
+# Shared memory and code-graph tools for agents (docs/MEMORY.md):
+#   mcp-server-qdrant  MCP server over the Qdrant service in compose.yml
+#   graphify           builds a knowledge graph of a codebase (/graphify skill)
+# Installed as uv tools with their own venvs; the binaries go on PATH.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    GRAPHIFY_QUERY_LOG_DISABLE=1
+RUN uv tool install "mcp-server-qdrant==0.8.1" && \
+    uv tool install "graphifyy==0.9.108" && \
+    mcp-server-qdrant --help >/dev/null && graphify --help >/dev/null
+COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
+COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
+COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs
+# Extra agent skills, synced into the agents' skill dirs at start.
+COPY skills/ /opt/agent-canvas/skills/
+
 # Persisted conversations created before the client_tools migration still
 # import canvas_ui_tool by qualname. Keep the compatibility module available;
 # new conversations define canvas_ui_control through a JSON client tool.

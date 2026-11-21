@@ -9,9 +9,13 @@ import {
   chunkText,
   isAuthorized,
   loadConfig,
+  buildMemberPrompt,
+  parseAssignments,
   parseMessage,
   parseNewArgs,
+  parseWorkingDir,
   statusTransition,
+  teamDone,
 } from "../../scripts/telegram-bridge-lib.mjs";
 
 describe("telegram bridge config", () => {
@@ -246,5 +250,83 @@ describe("AgentServerClient", () => {
     });
 
     await expect(client.getConversation("c")).rejects.toThrow(/HTTP 500/);
+  });
+});
+
+describe("telegram bridge teams", () => {
+  it("reads the plan block, not stray mentions in the prose", () => {
+    const answer = [
+      "I looked at the repo. @maria wrote the auth module last year.",
+      "",
+      "Plan:",
+      "1. **@api**: add GET /health in src/server.ts, done when it returns 200",
+      "- @web — show the health badge on the dashboard",
+      "@api: duplicate name is ignored",
+      "@Docs actualizar el README",
+    ].join("\n");
+
+    expect(parseAssignments(answer)).toEqual([
+      {
+        name: "api",
+        task: "add GET /health in src/server.ts, done when it returns 200",
+      },
+      { name: "web", task: "show the health badge on the dashboard" },
+      { name: "docs", task: "actualizar el README" },
+    ]);
+  });
+
+  it("caps the number of assignments", () => {
+    const lines = Array.from({ length: 9 }, (_, i) => `@a${i}: task ${i}`);
+
+    expect(parseAssignments(lines.join("\n"), 3)).toHaveLength(3);
+    expect(parseAssignments("no plan here")).toEqual([]);
+  });
+
+  it("tells a member its subtask, the goal and who leads", () => {
+    const prompt = buildMemberPrompt({
+      name: "api",
+      lead: "lider",
+      goal: "ship health checks",
+      subtask: "add /health",
+    });
+
+    expect(prompt).toContain("You are @api");
+    expect(prompt).toContain("led by @lider");
+    expect(prompt).toContain("Team goal: ship health checks");
+    expect(prompt).toContain("Your subtask: add /health");
+  });
+
+  it("waits until every member ran and settled, or failed", () => {
+    const team = (members: object[]) =>
+      teamDone(
+        [
+          { id: "lead", role: "lead" },
+          ...members.map((m) => ({ team: "lead", ...m })),
+        ],
+        "lead",
+      );
+
+    expect(team([])).toBe(false);
+    expect(team([{ lastStatus: "idle" }])).toBe(false); // never started
+    expect(
+      team([
+        { lastStatus: "finished", seenRunning: true },
+        { lastStatus: "running", seenRunning: true },
+      ]),
+    ).toBe(false);
+    expect(
+      team([
+        { lastStatus: "finished", seenRunning: true },
+        { lastStatus: "error" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("accepts only absolute working dirs without ..", () => {
+    expect(parseWorkingDir("/documents/dracma-web/")).toBe(
+      "/documents/dracma-web",
+    );
+    expect(parseWorkingDir("documents")).toBeNull();
+    expect(parseWorkingDir("/documents/../etc")).toBeNull();
   });
 });

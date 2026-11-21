@@ -15,17 +15,26 @@ import {
   AgentServerClient,
   BridgeState,
   TelegramClient,
+  buildIntegrationPrompt,
+  buildLeadPrompt,
+  buildMemberPrompt,
   isAuthorized,
   loadConfig,
+  parseAssignments,
   parseMessage,
   parseNewArgs,
+  parseWorkingDir,
   statusTransition,
+  teamDone,
 } from "./telegram-bridge-lib.mjs";
 
 const HELP = `Puente OpenHands ↔ Telegram
 
 /new <tarea> — crea un agente nuevo con esa tarea
 /new @nombre <tarea> — igual, con nombre propio
+/team [@nombre] <tarea> — un agente líder planifica y reparte subtareas
+/dispatch — reparte tareas a mano, una por línea: @nombre tarea
+/dir [ruta] — carpeta de trabajo de los próximos agentes (p. ej. /documents/mi-proyecto)
 /agents — lista los agentes de este chat
 /use <nombre|n> — elige el agente activo
 @nombre <mensaje> — habla con un agente concreto
@@ -42,6 +51,9 @@ const HELP = `Puente OpenHands ↔ Telegram
 
 const COMMANDS = [
   ["new", "Crear un agente con una tarea"],
+  ["team", "Líder que planifica y reparte subtareas"],
+  ["dispatch", "Repartir tareas: @nombre tarea por línea"],
+  ["dir", "Carpeta de trabajo de los próximos agentes"],
   ["agents", "Listar agentes del chat"],
   ["use", "Elegir agente activo"],
   ["all", "Mensaje a todos los agentes"],
@@ -87,6 +99,72 @@ async function sendToAgent(chatId, agent, text, replyTo) {
   await say(chatId, `➡️ Enviado a @${agent.name}`, { replyTo });
 }
 
+function workingDirFor(chat) {
+  return chat.workingDir ?? config.workingDir;
+}
+
+/** Creates a conversation and tracks it in the chat; returns the agent. */
+async function createAgent(chatId, { name, task, extra = {} }) {
+  const chat = state.chat(chatId);
+  const profileId = await server.resolveProfileId(
+    chat.profile ?? config.defaultProfile,
+  );
+  if (!profileId) {
+    throw new Error(
+      "No hay perfil de agente. Crea uno en Agent Canvas (Ajustes → Agente) o usa /profiles.",
+    );
+  }
+  const conversation = await server.createConversation({
+    profileId,
+    task,
+    workingDir: workingDirFor(chat),
+    chatId,
+  });
+  const agentName = state.addAgent(chatId, { id: conversation.id, name });
+  const agent = state.findAgent(chatId, agentName);
+  Object.assign(agent, extra);
+  save();
+  return agent;
+}
+
+/**
+ * Hands out assignments: an existing agent with that name gets a message, a
+ * new name gets a new agent. With `lead`, new agents join the lead's team.
+ */
+async function dispatch(chatId, assignments, lead = null) {
+  const lines = [];
+  for (const { name, task } of assignments) {
+    try {
+      const existing = lead ? null : state.findAgent(chatId, name);
+      if (existing) {
+        await server.sendMessage(existing.id, task);
+        existing.lastStatus = "pending";
+        lines.push(`➡️ @${existing.name}: enviado`);
+        continue;
+      }
+      const prompt = lead
+        ? buildMemberPrompt({
+            name,
+            lead: lead.name,
+            goal: lead.goal,
+            subtask: task,
+          })
+        : task;
+      const agent = await createAgent(chatId, {
+        name,
+        task: prompt,
+        extra: lead ? { team: lead.id } : {},
+      });
+      lines.push(`🤖 @${agent.name}: creado`);
+    } catch (error) {
+      lines.push(`⚠️ @${name}: ${error.message}`);
+    }
+  }
+  if (lead) state.chat(chatId).active = lead.id;
+  save();
+  return lines;
+}
+
 async function handleCommand(chatId, command, args, messageId) {
   const chat = state.chat(chatId);
   switch (command) {
@@ -103,30 +181,65 @@ async function handleCommand(chatId, command, args, messageId) {
         );
       }
       if (!task) return say(chatId, "Uso: /new [@nombre] <tarea>");
-      const profileId = await server.resolveProfileId(
-        chat.profile ?? config.defaultProfile,
-      );
-      if (!profileId) {
-        return say(
-          chatId,
-          "No hay perfil de agente. Crea uno en Agent Canvas (Ajustes → Agente) o usa /profiles.",
-        );
-      }
-      const conversation = await server.createConversation({
-        profileId,
-        task,
-        workingDir: config.workingDir,
-        chatId,
-      });
-      const agentName = state.addAgent(chatId, { id: conversation.id, name });
-      save();
-      const agent = state.findAgent(chatId, agentName);
+      const agent = await createAgent(chatId, { name, task });
       return say(
         chatId,
-        `🤖 @${agentName} creado (${conversation.id.slice(0, 8)}) y trabajando.\nTe aviso cuando termine.`,
+        `🤖 @${agent.name} creado (${agent.id.slice(0, 8)}) en ${workingDirFor(chat)} y trabajando.\nTe aviso cuando termine.`,
         { replyTo: messageId },
         agent,
       );
+    }
+
+    case "team": {
+      const { name, task, invalidName } = parseNewArgs(args);
+      if (invalidName) return say(chatId, `Nombre inválido "${invalidName}".`);
+      if (!task) return say(chatId, "Uso: /team [@nombre] <tarea>");
+      const lead = await createAgent(chatId, {
+        name: name ?? "lider",
+        task: buildLeadPrompt(task),
+        extra: { role: "lead", goal: task, awaitingPlan: true },
+      });
+      return say(
+        chatId,
+        `🧭 @${lead.name} es el líder y está preparando el plan en ${workingDirFor(chat)}.\nCuando termine te enseño las subtareas con un botón para repartirlas.`,
+        { replyTo: messageId },
+        lead,
+      );
+    }
+
+    case "dispatch": {
+      const assignments = parseAssignments(args, 12);
+      if (assignments.length === 0) {
+        return say(
+          chatId,
+          "Uso (una tarea por línea):\n/dispatch\n@api añade el endpoint /health\n@web muestra el estado en el panel",
+        );
+      }
+      const lines = await dispatch(chatId, assignments);
+      return say(chatId, `📦 Reparto:\n${lines.join("\n")}`);
+    }
+
+    case "dir": {
+      if (!args) {
+        return say(
+          chatId,
+          `Carpeta de trabajo: ${workingDirFor(chat)}\nCámbiala con /dir <ruta absoluta>, o /dir reset.`,
+        );
+      }
+      if (args === "reset") {
+        delete chat.workingDir;
+        save();
+        return say(chatId, `Carpeta de trabajo: ${config.workingDir}`);
+      }
+      const dir = parseWorkingDir(args);
+      if (!dir)
+        return say(
+          chatId,
+          "Usa una ruta absoluta, p. ej. /documents/mi-proyecto",
+        );
+      chat.workingDir = dir;
+      save();
+      return say(chatId, `📁 Los próximos agentes trabajarán en ${dir}`);
     }
 
     case "agents": {
@@ -301,11 +414,45 @@ async function handleCallback(query) {
     return telegram.answerCallback(query.id, "No autorizado");
   }
   const [action, conversationId] = String(query.data ?? "").split(":");
-  const agent = state
-    .chat(chatId)
-    .agents.find((item) => item.id === conversationId);
-  if (!agent || (action !== "ok" && action !== "no")) {
-    return telegram.answerCallback(query.id, "Agente desconocido");
+  const chat = state.chat(chatId);
+  const agent = chat.agents.find((item) => item.id === conversationId);
+  if (!agent) return telegram.answerCallback(query.id, "Agente desconocido");
+
+  if (action === "go" || action === "skip") {
+    const plan = agent.plan ?? [];
+    delete agent.plan;
+    save();
+    if (action === "skip" || plan.length === 0) {
+      await telegram.answerCallback(query.id, "Plan descartado");
+      return say(chatId, `Plan de @${agent.name} descartado.`);
+    }
+    await telegram.answerCallback(query.id, "Repartiendo…");
+    agent.teamNotified = false;
+    const lines = await dispatch(chatId, plan, agent);
+    return say(
+      chatId,
+      `🚀 Equipo de @${agent.name}:\n${lines.join("\n")}\nTe aviso cuando terminen todos.`,
+    );
+  }
+
+  if (action === "sum") {
+    const members = chat.agents.filter((item) => item.team === agent.id);
+    const results = [];
+    for (const member of members) {
+      results.push({
+        name: member.name,
+        response: await server.finalResponse(member.id).catch(() => ""),
+      });
+    }
+    await server.sendMessage(agent.id, buildIntegrationPrompt(results));
+    agent.lastStatus = "pending";
+    save();
+    await telegram.answerCallback(query.id, "Enviado al líder");
+    return say(chatId, `🧩 @${agent.name} está integrando los resultados.`);
+  }
+
+  if (action !== "ok" && action !== "no") {
+    return telegram.answerCallback(query.id, "Acción desconocida");
   }
   const accept = action === "ok";
   await server.respondToConfirmation(
@@ -333,6 +480,8 @@ async function watchAgents() {
         const next = info?.execution_status;
         const event = statusTransition(agent.lastStatus, next);
         if (next) agent.lastStatus = next;
+        // A fast agent can finish between polls; "done" also proves it ran.
+        if (next === "running" || event === "done") agent.seenRunning = true;
         if (event === "done") {
           const response = await server.finalResponse(agent.id).catch(() => "");
           await say(
@@ -341,6 +490,7 @@ async function watchAgents() {
             {},
             agent,
           );
+          if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
         } else if (event === "problem") {
           await say(
             chatId,
@@ -367,8 +517,63 @@ async function watchAgents() {
         log("watch failed for", agent.name, error.message);
       }
     }
+    for (const lead of chat.agents.filter((item) => item.role === "lead")) {
+      if (lead.teamNotified || !teamDone(chat.agents, lead.id)) continue;
+      lead.teamNotified = true;
+      const members = chat.agents
+        .filter((item) => item.team === lead.id)
+        .map((item) => `@${item.name} (${item.lastStatus})`);
+      await say(
+        chatId,
+        `🏁 El equipo de @${lead.name} terminó: ${members.join(", ")}.`,
+        {
+          keyboard: [
+            [
+              {
+                text: `🧩 Pedir a @${lead.name} que integre`,
+                callback_data: `sum:${lead.id}`,
+              },
+            ],
+          ],
+        },
+        lead,
+      ).catch((error) => log("team notice failed", error.message));
+    }
   }
   save();
+}
+
+/** After a lead's first answer, offer to hand out the plan it wrote. */
+async function offerPlan(chatId, lead, response) {
+  lead.awaitingPlan = false;
+  const plan = parseAssignments(response);
+  if (plan.length === 0) {
+    await say(
+      chatId,
+      `@${lead.name} no dejó un plan con líneas "@nombre: tarea". Responde a su mensaje para pedírselo, o reparte tú con /dispatch.`,
+      {},
+      lead,
+    );
+    return;
+  }
+  lead.plan = plan;
+  save();
+  await say(
+    chatId,
+    `📋 Plan de @${lead.name}:\n${plan.map((item) => `• @${item.name}: ${item.task}`).join("\n")}`,
+    {
+      keyboard: [
+        [
+          {
+            text: `🚀 Repartir ${plan.length} tarea${plan.length === 1 ? "" : "s"}`,
+            callback_data: `go:${lead.id}`,
+          },
+          { text: "✖️ Descartar", callback_data: `skip:${lead.id}` },
+        ],
+      ],
+    },
+    lead,
+  );
 }
 
 async function pollTelegram() {
