@@ -93,6 +93,7 @@ Installed on every start, from `skills/` in this repository:
 | `component-design-patterns` | Component APIs, composition, compound/headless components, state ownership |
 | `senior-frontend` | React/Next.js/Vue front ends: architecture, data, performance, accessibility, tests |
 | `senior-backend` | APIs and services: validation, data and migrations, auth, idempotency, reliability |
+| `change-safety-guard` | Impact analysis before changes; consent required for deletions, secrets, data, infra; backed-up branches |
 | `feature-branch-pr` | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs |
 | `qdrant-memory` | How to use the shared memory |
 | `code-review` | From the OpenHands extensions package |
@@ -122,3 +123,27 @@ docker exec -it agent-canvas gh auth login
 
 The login is kept in the state volume, and `gh` serves as git's credential
 helper.
+
+## Change safety guard
+
+The `change-safety-guard` skill and the `safe-branch` tool keep agents from
+damaging or deleting anything without your consent:
+
+- Before working, the agent lists what it will add, modify, and **delete or
+  replace**, plus any risky areas. Deletions and risky changes need your yes.
+- `safe-branch start <slug> [--worktree]` refuses to run over uncommitted
+  changes, tags the current commit as a local backup (`safety/<time>-<branch>`),
+  and creates `feat/<slug>` from the up-to-date default branch. It never
+  deletes, resets, stashes, or pushes.
+- `safe-branch check` compares the work with the base branch and flags deleted
+  files, secrets files and secret-looking values, database migrations and
+  schema changes, renames, bulk removals, CI/deploy config, and dependency
+  changes. Exit code 2 means the agent must stop and ask before committing or
+  pushing.
+- `safe-branch backups` lists the backup tags. To get a state back:
+  `git switch -c restore <tag>`.
+
+This is guidance plus a tool, not a sandbox: agents can still run shell
+commands. For hard limits, keep `AUTO_LOGIN` off on shared machines, mount
+only the folders agents need (`DOCUMENTS_DIR`), and turn on confirmation for
+risky actions in Canvas.

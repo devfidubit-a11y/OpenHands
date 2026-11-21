@@ -198,6 +198,12 @@ RUN uv tool install "mcp-server-qdrant==0.8.1" && \
 COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
 COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
 COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs
+# safe-branch: backed-up feature branches and a pre-commit risk check that
+# agents run before pushing (change-safety-guard skill).
+COPY scripts/safe-branch.mjs /opt/agent-canvas/safe-branch.mjs
+COPY scripts/safe-branch-lib.mjs /opt/agent-canvas/safe-branch-lib.mjs
+RUN printf '#!/bin/sh\nexec node /opt/agent-canvas/safe-branch.mjs "$@"\n' > /usr/local/bin/safe-branch && \
+    chmod 755 /usr/local/bin/safe-branch
 # Extra agent skills, synced into the agents' skill dirs at start.
 COPY skills/ /opt/agent-canvas/skills/
 

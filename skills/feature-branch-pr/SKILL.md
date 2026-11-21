@@ -9,12 +9,23 @@ Every change lands as a **feature addition on its own branch**, reviewed through
 a pull request. Never commit straight to the default branch, never force-push
 a shared branch, and never merge your own PR unless the user explicitly asks.
 
+Always apply the **change-safety-guard** skill too: analyze the impact first,
+and get consent for anything destructive.
+
 ## 1. Start the branch
+
+```bash
+safe-branch start <short-slug>   # backup tag + feat/<short-slug> from the default branch
+```
+
+`safe-branch` refuses on uncommitted changes and never deletes anything. If
+it isn't available, do the same by hand:
 
 ```bash
 git status                      # stop if there are changes you didn't make
 git fetch origin
 BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's@^origin/@@')
+git tag "safety/$(date +%Y%m%dT%H%M%S)-$(git branch --show-current)"
 git switch -c feat/<short-slug> "origin/$BASE"
 ```
 
@@ -32,12 +43,12 @@ When you are part of a team, or the checkout is busy, work in your own
 worktree:
 
 ```bash
-git worktree add ../<repo>-<agent-name> -b feat/<slug> "origin/$BASE"
-cd ../<repo>-<agent-name>
+safe-branch start <slug> --worktree      # creates ../<repo>-<slug>
+cd ../<repo>-<slug>
 ```
 
 Install dependencies there if needed. When the branch is merged, remove it
-with `git worktree remove ../<repo>-<agent-name>`.
+with `git worktree remove ../<repo>-<slug>`.
 
 ## 3. Commit
 
@@ -57,6 +68,9 @@ pulled it. Resolve conflicts by understanding both sides, never by blindly
 taking yours.
 
 ## 5. Push and open the PR
+
+Run `safe-branch check` first. Exit code 2 means something needs the user's
+consent: stop and ask. Put its "Tell the user" items in the PR description.
 
 ```bash
 git push -u origin HEAD

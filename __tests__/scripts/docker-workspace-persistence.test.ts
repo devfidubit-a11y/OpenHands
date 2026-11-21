@@ -30,7 +30,11 @@ describe("Docker workspace persistence", () => {
 
     expect(path.posix.isAbsolute(bakedWorkingDir)).toBe(true);
     expect(
-      volumes.some((volume) => bakedWorkingDir.startsWith(`${volume}/`)),
+      volumes.some(
+        (volume) =>
+          bakedWorkingDir === volume ||
+          bakedWorkingDir.startsWith(`${volume}/`),
+      ),
     ).toBe(true);
   });
 

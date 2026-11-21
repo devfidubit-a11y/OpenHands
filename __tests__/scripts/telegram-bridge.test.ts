@@ -296,8 +296,12 @@ describe("telegram bridge teams", () => {
     expect(prompt).toContain("led by @lider");
     expect(prompt).toContain("Team goal: ship health checks");
     expect(prompt).toContain("Your subtask: add /health");
-    expect(prompt).toContain("branch feat/ship-health-checks-api");
-    expect(prompt).toContain("Never commit\nto the default branch");
+    expect(prompt).toContain(
+      "`safe-branch start ship-health-checks-api --worktree`",
+    );
+    expect(prompt).toContain("worktree on feat/ship-health-checks-api");
+    expect(prompt).toContain("change-safety-guard");
+    expect(prompt).toContain("Never commit to the default branch.");
   });
 
   it("builds short ascii branch slugs", () => {
