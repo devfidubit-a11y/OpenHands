@@ -190,7 +190,8 @@ COPY scripts/telegram-bridge-lib.mjs /opt/agent-canvas/telegram-bridge-lib.mjs
 # Installed as uv tools with their own venvs; the binaries go on PATH.
 ENV UV_TOOL_DIR=/opt/uv-tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
-    GRAPHIFY_QUERY_LOG_DISABLE=1
+    GRAPHIFY_QUERY_LOG_DISABLE=1 \
+    GH_CONFIG_DIR=/home/openhands/.openhands/gh
 RUN uv tool install "mcp-server-qdrant==0.8.1" && \
     uv tool install "graphifyy==0.9.108" && \
     mcp-server-qdrant --help >/dev/null && graphify --help >/dev/null

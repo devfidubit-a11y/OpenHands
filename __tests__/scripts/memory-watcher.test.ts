@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,8 +14,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildConversationNote,
   findGitRepos,
+  keepGraphifyLocal,
   McpStdioClient,
   needsSummary,
+  snapshotRepoFiles,
   // @ts-expect-error -- plain ESM script without type declarations
 } from "../../scripts/memory-watcher-lib.mjs";
 
@@ -131,5 +139,48 @@ describe("McpStdioClient", () => {
       name: "qdrant-store",
       arguments: { information: "note" },
     });
+  });
+});
+
+describe("keepGraphifyLocal", () => {
+  let repo: string;
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  const read = (path: string) => readFileSync(join(repo, path), "utf-8");
+
+  it("moves graphify's attributes into .git/info and keeps the repo clean", () => {
+    repo = mkdtempSync(join(tmpdir(), "repo-"));
+    mkdirSync(join(repo, ".git/info"), { recursive: true });
+    writeFileSync(join(repo, ".gitattributes"), "*.png binary\n");
+    const before = snapshotRepoFiles(repo);
+    // what `graphify hook install` does
+    writeFileSync(
+      join(repo, ".gitattributes"),
+      "*.png binary\ngraphify-out/graph.json merge=graphify\n",
+    );
+
+    keepGraphifyLocal(repo, before);
+    keepGraphifyLocal(repo, before); // idempotent
+
+    expect(read(".gitattributes")).toBe("*.png binary\n");
+    expect(read(".git/info/attributes")).toBe(
+      "graphify-out/graph.json merge=graphify\n",
+    );
+    expect(read(".git/info/exclude")).toBe("graphify-out/\n");
+  });
+
+  it("removes a .gitattributes that graphify created", () => {
+    repo = mkdtempSync(join(tmpdir(), "repo-"));
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const before = snapshotRepoFiles(repo);
+    writeFileSync(
+      join(repo, ".gitattributes"),
+      "graphify-out/graph.json merge=graphify\n",
+    );
+
+    keepGraphifyLocal(repo, before);
+
+    expect(() => read(".gitattributes")).toThrow();
+    expect(read(".git/info/attributes")).toContain("merge=graphify");
   });
 });

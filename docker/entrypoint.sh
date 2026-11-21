@@ -551,6 +551,17 @@ if command -v graphify >/dev/null 2>&1; then
   fi
 fi
 
+# Git and GitHub for the feature-branch-pr skill. The gh login lives in the
+# state volume (GH_CONFIG_DIR), so `gh auth login` survives restarts; GH_TOKEN
+# in .env works too. gh then serves as git's credential helper for pushes.
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-${OPENHANDS_DIR}/gh}"
+mkdir -p "$GH_CONFIG_DIR" 2>/dev/null || true
+if [ -n "${GIT_USER_NAME:-}" ]; then git config --global user.name "$GIT_USER_NAME"; fi
+if [ -n "${GIT_USER_EMAIL:-}" ]; then git config --global user.email "$GIT_USER_EMAIL"; fi
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh auth setup-git >/dev/null 2>&1 || log "WARNING: gh auth setup-git failed"
+fi
+
 # Embedding model cache for the Qdrant memory MCP server, kept in the state
 # volume so the model is downloaded once, not on every container recreate.
 export FASTEMBED_CACHE_PATH="${FASTEMBED_CACHE_PATH:-${OPENHANDS_DIR}/cache/fastembed}"

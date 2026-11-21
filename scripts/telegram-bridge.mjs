@@ -444,7 +444,10 @@ async function handleCallback(query) {
         response: await server.finalResponse(member.id).catch(() => ""),
       });
     }
-    await server.sendMessage(agent.id, buildIntegrationPrompt(results));
+    await server.sendMessage(
+      agent.id,
+      buildIntegrationPrompt(results, agent.goal),
+    );
     agent.lastStatus = "pending";
     save();
     await telegram.answerCallback(query.id, "Enviado al líder");

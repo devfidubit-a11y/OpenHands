@@ -30,12 +30,14 @@ import { buildMemoryMcpServer } from "./register-memory-mcp.mjs";
 import {
   buildConversationNote,
   findGitRepos,
+  keepGraphifyLocal,
   loadState,
   McpStdioClient,
   messageText,
   needsSummary,
   saveState,
   shortHash,
+  snapshotRepoFiles,
 } from "./memory-watcher-lib.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -56,7 +58,11 @@ const hooksOn = env.GRAPHIFY_AUTO_HOOKS !== "false";
 const pollMs = Number(env.MEMORY_POLL_MS) || 30_000;
 const scanMs = Number(env.GRAPHIFY_SCAN_MS) || 300_000;
 const backfill = Number(env.MEMORY_SUMMARY_BACKFILL ?? 20);
-const projectsDir = env.GRAPHIFY_PROJECTS_DIR || "/projects";
+// Comma-separated folders; each is a repo itself or holds repos (3 levels).
+const projectsDirs = (env.GRAPHIFY_PROJECTS_DIR || "/projects")
+  .split(",")
+  .map((dir) => dir.trim())
+  .filter(Boolean);
 
 const state = loadState(statePath);
 let mcp = null;
@@ -142,13 +148,18 @@ async function pollConversations() {
 }
 
 async function scanRepos() {
-  for (const repo of findGitRepos(projectsDir, 3)) {
+  const repos = [
+    ...new Set(projectsDirs.flatMap((dir) => findGitRepos(dir, 3))),
+  ];
+  for (const repo of repos) {
     if (state.repos[repo]?.hooks) continue;
     try {
+      const before = snapshotRepoFiles(repo);
       await execFileAsync("graphify", ["hook", "install"], {
         cwd: repo,
         timeout: 60_000,
       });
+      keepGraphifyLocal(repo, before);
       state.repos[repo] = { hooks: true, at: new Date().toISOString() };
       log(`graphify hooks installed in ${repo}`);
       if (!existsSync(join(repo, "graphify-out", "graph.json"))) {
@@ -199,7 +210,7 @@ if (!summariesOn && !hooksOn) {
   process.exit(0);
 }
 log(
-  `summaries ${summariesOn ? "on" : "off"}, graphify hooks ${hooksOn ? `on (${projectsDir})` : "off"}`,
+  `summaries ${summariesOn ? "on" : "off"}, graphify hooks ${hooksOn ? `on (${projectsDirs.join(", ")})` : "off"}`,
 );
 if (summariesOn) every(pollMs, pollConversations, "conversation poll");
 if (hooksOn) every(scanMs, scanRepos, "repository scan");

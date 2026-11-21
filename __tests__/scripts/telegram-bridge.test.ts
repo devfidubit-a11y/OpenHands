@@ -9,11 +9,13 @@ import {
   chunkText,
   isAuthorized,
   loadConfig,
+  buildIntegrationPrompt,
   buildMemberPrompt,
   parseAssignments,
   parseMessage,
   parseNewArgs,
   parseWorkingDir,
+  slugify,
   statusTransition,
   teamDone,
 } from "../../scripts/telegram-bridge-lib.mjs";
@@ -294,6 +296,26 @@ describe("telegram bridge teams", () => {
     expect(prompt).toContain("led by @lider");
     expect(prompt).toContain("Team goal: ship health checks");
     expect(prompt).toContain("Your subtask: add /health");
+    expect(prompt).toContain("branch feat/ship-health-checks-api");
+    expect(prompt).toContain("Never commit\nto the default branch");
+  });
+
+  it("builds short ascii branch slugs", () => {
+    expect(slugify("Añade un formulario de contacto con validación")).toBe(
+      "anade-formulario-contacto-con",
+    );
+    expect(slugify("!!!")).toBe("feature");
+  });
+
+  it("asks the lead for one integration PR, without merging to main", () => {
+    const prompt = buildIntegrationPrompt(
+      [{ name: "api", response: "branch feat/x-api, PR #4" }],
+      "contact form",
+    );
+
+    expect(prompt).toContain("@api:\nbranch feat/x-api, PR #4");
+    expect(prompt).toContain("feat/contact-form");
+    expect(prompt).toContain("Do not\nmerge into the default branch");
   });
 
   it("waits until every member ran and settled, or failed", () => {

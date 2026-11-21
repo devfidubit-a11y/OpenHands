@@ -7,11 +7,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -144,6 +146,65 @@ export function findGitRepos(root, maxDepth = 3) {
     // root missing: no repos
   }
   return repos;
+}
+
+// ── Keep graphify's repo changes local ──────────────────────────────────────
+
+function readIfExists(path) {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/** Snapshot of the files `graphify hook install` may touch in a work tree. */
+export function snapshotRepoFiles(repo) {
+  return { gitattributes: readIfExists(join(repo, ".gitattributes")) };
+}
+
+/**
+ * Undo graphify's visible changes so a user's repository shows nothing new
+ * in `git status`: lines it added to `.gitattributes` move to
+ * `.git/info/attributes`, and `graphify-out/` goes to `.git/info/exclude`.
+ * Both files are local to the clone and never committed.
+ */
+export function keepGraphifyLocal(repo, before) {
+  const gitDir = join(repo, ".git");
+  if (!statSync(gitDir).isDirectory()) return; // worktree/submodule: skip
+  const infoDir = join(gitDir, "info");
+  mkdirSync(infoDir, { recursive: true });
+
+  const attrPath = join(repo, ".gitattributes");
+  const after = readIfExists(attrPath);
+  if (after !== before.gitattributes) {
+    const old = new Set((before.gitattributes ?? "").split(/\r?\n/));
+    const added = (after ?? "")
+      .split(/\r?\n/)
+      .filter((line) => line.trim() && !old.has(line));
+    const localPath = join(infoDir, "attributes");
+    const local = readIfExists(localPath) ?? "";
+    const missing = added.filter(
+      (line) => !local.split(/\r?\n/).includes(line),
+    );
+    if (missing.length) {
+      appendFileSync(
+        localPath,
+        `${local && !local.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`,
+      );
+    }
+    if (before.gitattributes === null) rmSync(attrPath, { force: true });
+    else writeFileSync(attrPath, before.gitattributes);
+  }
+
+  const excludePath = join(infoDir, "exclude");
+  const exclude = readIfExists(excludePath) ?? "";
+  if (!exclude.split(/\r?\n/).includes("graphify-out/")) {
+    appendFileSync(
+      excludePath,
+      `${exclude && !exclude.endsWith("\n") ? "\n" : ""}graphify-out/\n`,
+    );
+  }
 }
 
 // ── MCP stdio client ─────────────────────────────────────────────────────────

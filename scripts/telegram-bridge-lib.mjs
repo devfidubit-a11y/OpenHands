@@ -318,31 +318,65 @@ export function buildLeadPrompt(task, max = MAX_TEAM_SIZE) {
   ].join("\n");
 }
 
+/** kebab-case slug for branch names: "Add a contact form!" → "add-contact-form". */
+export function slugify(text, maxWords = 4) {
+  const words = String(text ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(
+      (w) =>
+        w &&
+        !["a", "an", "the", "de", "la", "el", "un", "una", "y", "and"].includes(
+          w,
+        ),
+    );
+  return words.slice(0, maxWords).join("-") || "feature";
+}
+
 /** First message for a sub-agent created from a team plan. */
 export function buildMemberPrompt({ name, lead, goal, subtask }) {
+  const branch = `feat/${slugify(goal)}-${name}`;
   return [
     `You are @${name}, a member of a team led by @${lead}, coordinated from Telegram.`,
     goal ? `Team goal: ${goal}` : "",
     `Your subtask: ${subtask}`,
     "",
     "Only change what your subtask needs; other agents work on the rest in",
-    "parallel. When you finish, reply with a short summary of what you changed",
-    "and anything the lead must know.",
+    "parallel. Use the expert skills that fit your subtask (senior-frontend,",
+    "senior-backend, component-design-patterns, ui-design, ux-design,",
+    "senior-devops, senior-architect).",
+    "",
+    "If the folder is a git repository, follow the feature-branch-pr skill:",
+    `work in your own git worktree on the branch ${branch}, commit with`,
+    "conventional messages, push, and open a draft pull request. Never commit",
+    "to the default branch.",
+    "",
+    "When you finish, reply with a short summary of what you changed, the",
+    "branch and PR link, and anything the lead must know.",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
 /** Message asking the lead to integrate the team's results. */
-export function buildIntegrationPrompt(results) {
+export function buildIntegrationPrompt(results, goal = "") {
   return [
     "Your team finished. Here is what each agent reported:",
     "",
     ...results.map(
       ({ name, response }) => `@${name}:\n${response || "(no answer)"}\n`,
     ),
-    "Review and integrate the results, check that the pieces fit together,",
-    "fix conflicts, and reply with a final summary for the user.",
+    "Review each branch or pull request with the feature-branch-pr skill.",
+    `Integrate them on one feature branch (feat/${slugify(goal)}) created from the`,
+    "default branch: merge the members' branches, resolve conflicts, and run",
+    "lint, type check and tests. Push it and open one pull request that",
+    "describes the whole feature addition and links the members' PRs. Do not",
+    "merge into the default branch. Reply with a final summary for the user",
+    "and the PR link.",
   ].join("\n");
 }
 
