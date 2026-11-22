@@ -107,6 +107,7 @@ Installed on every start, from `skills/` in this repository:
 | `security-audit` | OWASP, authz, secrets, dependency and config audit (`/security`) |
 | `migration-modernization` | Framework/language migrations in small tested PRs (`/migrate`) |
 | `session-insights` | Post-mortem of an agent session; lessons saved to memory (`/insights`) |
+| `pencil-design` | pen.dev (Pencil) designs through the `pencil` MCP: design → code, code → design, design review (`/design`) |
 | `qdrant-memory` | How to use the shared memory |
 | `code-review` | From the OpenHands extensions package |
 | `graphify` | Installed by Graphify itself |

@@ -805,3 +805,15 @@ describe("expert council", () => {
     ).toBe(BOT_TEMPLATES.consejo.text);
   });
 });
+
+describe("design command", () => {
+  it("routes frontend work through the pencil-design skill", () => {
+    expect(buildSkillRequest("design", "").usage).toMatch(/Uso: \/design/);
+    const { request } = buildSkillRequest("design", "la pantalla Checkout");
+    expect(request).toContain("pencil-design");
+    expect(request).toContain("la pantalla Checkout");
+    expect(COUNCIL_EXPERTS.frontend.skills.join(" ")).toContain(
+      "pencil-design",
+    );
+  });
+});

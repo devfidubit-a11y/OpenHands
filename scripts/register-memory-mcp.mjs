@@ -42,11 +42,17 @@ async function waitForServer(base, headers, timeoutMs) {
   return null;
 }
 
-export async function registerMemoryMcp(env = process.env, log = console.log) {
-  if (!env.QDRANT_URL) {
-    log("[memory] QDRANT_URL not set; skipping memory MCP registration");
-    return "skipped";
-  }
+/**
+ * Register one MCP server with the Agent Server under `key`, unless an entry
+ * with that key exists (kept as the user set it, including disabled).
+ * Returns "registered", "exists", "unreachable" or "failed".
+ */
+export async function registerMcpServer(
+  env,
+  key,
+  entry,
+  { log = console.log, tag = "mcp", timeoutMs = 180_000 } = {},
+) {
   const base = (env.OH_AGENT_SERVER_URL || "http://127.0.0.1:18000").replace(
     /\/+$/,
     "",
@@ -56,30 +62,37 @@ export async function registerMemoryMcp(env = process.env, log = console.log) {
     headers["X-Session-API-Key"] = env.OH_SESSION_API_KEY;
   }
 
-  const settings = await waitForServer(base, headers, 180_000);
+  const settings = await waitForServer(base, headers, timeoutMs);
   if (!settings) {
-    log("[memory] Agent Server not reachable; memory MCP not registered");
+    log(`[${tag}] Agent Server not reachable; ${key} MCP not registered`);
     return "unreachable";
   }
   const existing = settings.agent_settings?.mcp_config ?? {};
-  if (existing && typeof existing === "object" && MEMORY_MCP_KEY in existing) {
-    log("[memory] qdrant_memory MCP server already configured");
+  if (existing && typeof existing === "object" && key in existing) {
+    log(`[${tag}] ${key} MCP server already configured`);
     return "exists";
   }
   const res = await fetch(
-    `${base}/api/settings/mcp/${encodeURIComponent(MEMORY_MCP_KEY)}`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(buildMemoryMcpServer(env)),
-    },
+    `${base}/api/settings/mcp/${encodeURIComponent(key)}`,
+    { method: "POST", headers, body: JSON.stringify(entry) },
   );
   if (!res.ok) {
-    log(`[memory] registering memory MCP failed: HTTP ${res.status}`);
+    log(`[${tag}] registering ${key} MCP failed: HTTP ${res.status}`);
     return "failed";
   }
-  log("[memory] Registered qdrant_memory MCP server for all agents");
+  log(`[${tag}] Registered ${key} MCP server for all agents`);
   return "registered";
+}
+
+export async function registerMemoryMcp(env = process.env, log = console.log) {
+  if (!env.QDRANT_URL) {
+    log("[memory] QDRANT_URL not set; skipping memory MCP registration");
+    return "skipped";
+  }
+  return registerMcpServer(env, MEMORY_MCP_KEY, buildMemoryMcpServer(env), {
+    log,
+    tag: "memory",
+  });
 }
 
 const isMain =

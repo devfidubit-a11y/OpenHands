@@ -928,6 +928,14 @@ if [ -n "${QDRANT_URL:-}" ]; then
     node /opt/agent-canvas/register-memory-mcp.mjs &
 fi
 
+# pen.dev (Pencil) design tools: with PEN_MCP_URL set (the host runs
+# scripts/pen-mcp-gateway.mjs next to the Pen app), register it for all agents.
+if [ -n "${PEN_MCP_URL:-}" ]; then
+  OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+  OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+    node /opt/agent-canvas/register-pen-mcp.mjs &
+fi
+
 # ── 8. (Optional) Memory watcher ────────────────────────────────────────────
 # Stores a summary of each finished conversation in the shared memory, and
 # installs graphify's git hooks in repositories under /projects so every

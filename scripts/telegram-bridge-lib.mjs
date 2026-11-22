@@ -418,7 +418,8 @@ export function buildMemberPrompt({ name, lead, goal, subtask }) {
     "",
     "Only change what your subtask needs; other agents work on the rest in",
     "parallel. Use the expert skills that fit your subtask (senior-frontend,",
-    "senior-backend, component-design-patterns, ux-ui-storytelling, ui-design,",
+    "senior-backend, component-design-patterns, pencil-design (pen.dev designs",
+    "through the pencil MCP), ux-ui-storytelling, ui-design,",
     "ux-design, qa-testing, cloudflare-wrangler, docker-containers, senior-devops,",
     "senior-architect), and add or update tests for what you change.",
     "",
@@ -885,6 +886,15 @@ export function buildSkillRequest(command, rawArgs = "") {
       return {
         request: `Use the migration-modernization skill: ${args}. Assess and write the step-by-step migration plan first and wait for my approval before changing code.`,
       };
+    case "design":
+      if (!args)
+        return {
+          usage:
+            "Uso: /design <qué diseñar o implementar> (ej.: /design implementa la pantalla Checkout del archivo landing.pen)",
+        };
+      return {
+        request: `Frontend and design work with pen.dev: use the pencil-design skill (the pencil MCP tools; never read .pen files as text) together with senior-frontend, component-design-patterns, ux-design and ui-design. Task: ${args}. Map the design's styles to the project's tokens, build or update the components on a feature branch with tests and a draft PR, and compare the result with the Pencil frame. Don't save changes to an existing .pen file without asking me.`,
+      };
     default:
       return null;
   }
@@ -900,6 +910,7 @@ export const SKILL_COMMANDS = [
   "latency",
   "security",
   "migrate",
+  "design",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1270,13 +1281,23 @@ export const COUNCIL_EXPERTS = {
     title: "UX/UI designer",
     focus:
       "user flows, friction, accessibility, UX copy, visual consistency and storytelling",
-    skills: ["ux-design", "ui-design", "ux-ui-storytelling", "impeccable"],
+    skills: [
+      "ux-design",
+      "ui-design",
+      "ux-ui-storytelling",
+      "impeccable",
+      "pencil-design (pencil MCP: read the .pen designs)",
+    ],
   },
   frontend: {
     title: "senior frontend engineer",
     focus:
       "components, state, rendering, bundle size, Core Web Vitals and frontend tech debt",
-    skills: ["senior-frontend", "component-design-patterns"],
+    skills: [
+      "senior-frontend",
+      "component-design-patterns",
+      "pencil-design (pencil MCP: compare the code with the .pen designs)",
+    ],
   },
   backend: {
     title: "senior backend engineer",

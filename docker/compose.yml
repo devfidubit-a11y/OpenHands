@@ -15,6 +15,10 @@ services:
     container_name: agent-canvas
     restart: unless-stopped
     init: false # the image already runs tini as PID 1
+    extra_hosts:
+      # The host, for the pen.dev MCP gateway (PEN_MCP_URL); built in on
+      # Docker Desktop, needed on Linux.
+      - "host.docker.internal:host-gateway"
     env_file:
       - path: .env
         required: false

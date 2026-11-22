@@ -208,6 +208,7 @@ RUN npm install -g "@anthropic-ai/claude-code@2.1.325" && \
       node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs") && \
     claude --version && npm cache clean --force
 COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
+COPY scripts/register-pen-mcp.mjs /opt/agent-canvas/register-pen-mcp.mjs
 COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
 COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs
 # safe-branch: backed-up feature branches and a pre-commit risk check that

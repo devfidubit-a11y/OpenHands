@@ -138,6 +138,7 @@ so (fixes go through feature branches and PRs).
 | `/security [focus]` | `security-audit` | OWASP, authz, secrets, dependencies and config findings, read-only. |
 | `/migrate <from → to>` | `migration-modernization` | A step-by-step plan for approval, then one PR per step. |
 | `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
+| `/design <task>` | `pencil-design` | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md). |
 
 ### Expert council: parallel work, debate and decisions
 

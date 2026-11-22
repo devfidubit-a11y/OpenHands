@@ -82,6 +82,7 @@ Agentes expertos (los reparte @coordinador):
 /security [enfoque] — auditoría de seguridad (solo lectura)
 /migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
 /insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
+/design <tarea> — frontend con pen.dev: diseño .pen → código (o código → diseño) vía Pencil MCP
 
 Consejo de expertos (trabajan en paralelo, debaten y votan):
 /consejo [expertos:] <tema> — cada experto propone por su cuenta, luego
@@ -121,6 +122,7 @@ const COMMANDS = [
   ["security", "Auditoría de seguridad"],
   ["migrate", "Migración por pasos"],
   ["insights", "Analizar la sesión de un agente"],
+  ["design", "Frontend con diseños de pen.dev"],
   ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
   ["bots", "Plantillas de bots"],
   ["bot", "Activar un bot programado"],
