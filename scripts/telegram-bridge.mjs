@@ -15,6 +15,13 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  COUNCIL_EXPERTS,
+  buildCouncilDebatePrompt,
+  buildCouncilDecisionPrompt,
+  buildCouncilProposalPrompt,
+  formatTally,
+  parseCouncilArgs,
+  tallyVotes,
   SKILL_COMMANDS,
   TelegramClient,
   buildInsightsPrompt,
@@ -76,8 +83,15 @@ Agentes expertos (los reparte @coordinador):
 /migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
 /insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
 
+Consejo de expertos (trabajan en paralelo, debaten y votan):
+/consejo [expertos:] <tema> — cada experto propone por su cuenta, luego
+  debaten las propuestas de los demás y votan; @moderador decide, guarda la
+  decisión en memoria y te propone el plan para repartir (tú lo apruebas)
+  Ej.: /consejo ux, growth, producto: por qué no convierte la landing
+/consejo — expertos disponibles y consejos en curso
+
 Bots y tareas programadas:
-/bots — plantillas de bots siempre activos (latency, qa, scans, security, deps, wiki)
+/bots — plantillas de bots siempre activos (latency, qa, scans, security, deps, consejo, wiki)
 /bot <plantilla> [cuándo] — activa un bot en este chat y carpeta
 /schedule <cuándo> <texto o /comando> — programa una tarea (diario 09:00, lunes 09:00, laborables 08:30, cada 6h)
 /schedule — lista las tareas · /schedule rm <id> · /schedule run <id>
@@ -107,6 +121,7 @@ const COMMANDS = [
   ["security", "Auditoría de seguridad"],
   ["migrate", "Migración por pasos"],
   ["insights", "Analizar la sesión de un agente"],
+  ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
   ["bots", "Plantillas de bots"],
   ["bot", "Activar un bot programado"],
   ["schedule", "Tareas programadas"],
@@ -620,6 +635,25 @@ async function handleCommand(chatId, command, args, messageId) {
       return addSchedule(chatId, args);
     }
 
+    case "consejo":
+    case "council":
+    case "debate": {
+      const parsed = parseCouncilArgs(args);
+      if (parsed.usage) {
+        const open = (chat.councils ?? []).filter(
+          (item) => item.phase !== "done",
+        );
+        const experts = Object.entries(COUNCIL_EXPERTS).map(
+          ([key, info]) => `• ${key} — ${info.title}`,
+        );
+        return say(
+          chatId,
+          `${parsed.usage}\n\n${experts.join("\n")}${open.length ? `\n\nEn curso:\n${open.map((item) => `• ${item.topic} (${item.phase === "proposals" ? "propuestas" : "debate"})`).join("\n")}` : ""}`,
+        );
+      }
+      return startCouncil(chatId, parsed, { messageId });
+    }
+
     default:
       if (SKILL_COMMANDS.includes(command)) {
         const built = buildSkillRequest(command, args);
@@ -737,6 +771,141 @@ async function handleCallback(query) {
 }
 
 /** Adds a scheduled request to the chat, bound to the current folder. */
+/**
+ * Expert council, phase 1: one read-only agent per expert, all in parallel.
+ * watchAgents moves it on: debate when all have proposed, then @moderador.
+ */
+async function startCouncil(
+  chatId,
+  { experts, topic },
+  { workingDir = null, messageId = null, label = null } = {},
+) {
+  const chat = state.chat(chatId);
+  const dir = workingDir ?? workingDirFor(chat);
+  const council = {
+    id: `council-${Date.now().toString(36)}`,
+    topic,
+    workingDir: dir,
+    phase: "proposals",
+    createdAt: Date.now(),
+  };
+  (chat.councils ??= []).push(council);
+  const names = [];
+  const failures = [];
+  for (const expert of experts) {
+    const name = state.uniqueName(chatId, expert);
+    try {
+      await createAgent(chatId, {
+        name,
+        task: buildCouncilProposalPrompt({
+          expert,
+          name,
+          topic,
+          panel: experts,
+          workingDir: dir,
+        }),
+        extra: { team: council.id, expert },
+        workingDir: dir,
+      });
+      names.push(name);
+    } catch (error) {
+      failures.push(`⚠️ @${name}: ${error.message}`);
+    }
+  }
+  if (names.length < 2) council.phase = "done";
+  save();
+  return say(
+    chatId,
+    [
+      `🏛️ ${label ? `${label}: c` : "C"}onsejo sobre "${topic}" en ${dir}`,
+      `Expertos en paralelo: ${names.map((name) => `@${name}`).join(", ")}`,
+      "1) cada uno propone por su cuenta (solo lectura) → 2) debaten y votan → 3) @moderador decide y te propone el plan.",
+      ...failures,
+      names.length < 2 ? "No se pudo formar el consejo." : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    messageId ? { replyTo: messageId } : {},
+  );
+}
+
+/** Moves a council to its next phase once all its experts have answered. */
+async function advanceCouncil(chatId, council) {
+  const chat = state.chat(chatId);
+  const members = chat.agents.filter((item) => item.team === council.id);
+  const healthy = members.filter(
+    (item) => !["error", "stuck"].includes(item.lastStatus),
+  );
+  const answers = [];
+  for (const member of healthy) {
+    answers.push({
+      name: member.name,
+      text: await server.finalResponse(member.id).catch(() => ""),
+    });
+  }
+  if (council.phase === "proposals" && healthy.length >= 2) {
+    council.phase = "debate";
+    council.proposals = answers.map((item) => ({
+      ...item,
+      text: item.text.slice(0, 6000),
+    }));
+    save();
+    for (const member of healthy) {
+      await server
+        .sendMessage(
+          member.id,
+          buildCouncilDebatePrompt({
+            expert: member.name,
+            topic: council.topic,
+            positions: council.proposals,
+          }),
+        )
+        .catch((error) =>
+          log("debate send failed", member.name, error.message),
+        );
+      markPending(member);
+    }
+    save();
+    return say(
+      chatId,
+      `🗣️ Debate: ${healthy.map((item) => `@${item.name}`).join(", ")} leen las propuestas de los demás, las discuten y votan su top 3.`,
+    );
+  }
+  // Debate finished (or too few experts left to debate): the moderator decides.
+  council.phase = "done";
+  const proposals = council.proposals ?? answers;
+  const debate = council.proposals ? answers : [];
+  const tally = tallyVotes(debate);
+  council.tally = tally.slice(0, 12);
+  save();
+  const moderator = await createAgent(chatId, {
+    name: "moderador",
+    task: buildCouncilDecisionPrompt({
+      topic: council.topic,
+      proposals,
+      debate,
+      tally,
+      workingDir: council.workingDir,
+    }),
+    extra: {
+      role: "lead",
+      awaitingPlan: true,
+      goal: council.topic,
+      workingDir: council.workingDir,
+      councilOf: council.id,
+    },
+    workingDir: council.workingDir,
+  });
+  council.moderator = moderator.id;
+  save();
+  return say(
+    chatId,
+    `🗳️ Votos del consejo:\n${formatTally(tally)}\n\n⚖️ @${moderator.name} está decidiendo. Te propondrá el plan para que lo apruebes.`,
+    {},
+    moderator,
+  );
+}
+
 function addSchedule(chatId, args, extra = {}) {
   const chat = state.chat(chatId);
   const parsed = parseScheduleArgs(args);
@@ -766,6 +935,17 @@ function addSchedule(chatId, args, extra = {}) {
 async function runSchedule(chatId, item) {
   item.lastRunAt = Date.now();
   save();
+  const council = /^\/(?:consejo|council|debate)(?:@\S+)?\s+([\s\S]+)$/i.exec(
+    item.text.trim(),
+  );
+  if (council) {
+    const parsed = parseCouncilArgs(council[1]);
+    if (parsed.usage) return say(chatId, parsed.usage);
+    return startCouncil(chatId, parsed, {
+      workingDir: item.workingDir,
+      label: `⏰ Tarea #${item.id}${item.bot ? ` (bot ${item.bot})` : ""}`,
+    });
+  }
   return routeToCoordinator(chatId, expandScheduledText(item.text), null, {
     workingDir: item.workingDir,
     label: `⏰ Tarea #${item.id}${item.bot ? ` (bot ${item.bot})` : ""}`,
@@ -882,6 +1062,18 @@ async function watchAgents() {
         },
         lead,
       ).catch((error) => log("team notice failed", error.message));
+    }
+    for (const council of chat.councils ?? []) {
+      if (council.phase === "done" || !teamDone(chat.agents, council.id))
+        continue;
+      await advanceCouncil(chatId, council).catch((error) => {
+        log("council failed", council.id, error.message);
+        council.phase = "done";
+        return say(
+          chatId,
+          `⚠️ El consejo "${council.topic}" falló: ${error.message}`,
+        ).catch(() => {});
+      });
     }
   }
   save();

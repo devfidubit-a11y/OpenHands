@@ -1225,6 +1225,12 @@ export const BOT_TEMPLATES = {
     description:
       "Revisa dependencias vulnerables o desactualizadas cada semana.",
   },
+  consejo: {
+    when: "jueves 10:00",
+    text: "/consejo producto, ux, frontend, qa, growth: revisa el producto y propone las 3 mejoras con más impacto para los usuarios esta semana",
+    description:
+      "Cada semana un consejo de expertos debate y propone las mejoras del producto; tú apruebas el plan.",
+  },
   wiki: {
     when: "domingo 20:00",
     text: "/wiki actualiza solo las páginas cuyo código cambió",
@@ -1246,4 +1252,297 @@ export function expandScheduledText(text) {
     if (built?.request) return built.request;
   }
   return String(text ?? "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Expert council: experts propose in parallel, debate each other's proposals,
+// vote, and a moderator decides and writes the plan the user approves.
+// ---------------------------------------------------------------------------
+
+export const COUNCIL_EXPERTS = {
+  producto: {
+    title: "product manager",
+    focus:
+      "user value, the problem worth solving, metrics (activation, retention, conversion) and RICE prioritization",
+    skills: ["codebase-qa"],
+  },
+  ux: {
+    title: "UX/UI designer",
+    focus:
+      "user flows, friction, accessibility, UX copy, visual consistency and storytelling",
+    skills: ["ux-design", "ui-design", "ux-ui-storytelling", "impeccable"],
+  },
+  frontend: {
+    title: "senior frontend engineer",
+    focus:
+      "components, state, rendering, bundle size, Core Web Vitals and frontend tech debt",
+    skills: ["senior-frontend", "component-design-patterns"],
+  },
+  backend: {
+    title: "senior backend engineer",
+    focus: "APIs, data model, queries, jobs, error handling and reliability",
+    skills: ["senior-backend"],
+  },
+  arquitectura: {
+    title: "software architect",
+    focus:
+      "boundaries, coupling, scalability, build-vs-buy, and the cost of each change over time",
+    skills: ["senior-architect"],
+  },
+  qa: {
+    title: "QA lead",
+    focus:
+      "test coverage of risky paths, flaky areas, regressions and how each proposal will be verified",
+    skills: ["qa-testing"],
+  },
+  seguridad: {
+    title: "application security engineer",
+    focus: "authn/authz, injection, secrets, dependencies and data protection",
+    skills: ["security-audit"],
+  },
+  rendimiento: {
+    title: "performance engineer",
+    focus: "latency, slow queries, payload size and the user-perceived speed",
+    skills: ["latency-optimizer"],
+  },
+  devops: {
+    title: "DevOps/SRE engineer",
+    focus:
+      "CI/CD, Docker, Cloudflare deploys, observability, cost and rollback",
+    skills: ["senior-devops", "docker-containers", "cloudflare-wrangler"],
+  },
+  growth: {
+    title: "growth and marketing expert",
+    focus:
+      "onboarding, conversion funnel, SEO, landing pages, pricing pages and messaging",
+    skills: ["ux-ui-storytelling"],
+  },
+  datos: {
+    title: "data and analytics expert",
+    focus:
+      "event tracking, product metrics, dashboards, data quality and experiments (A/B)",
+    skills: ["senior-backend"],
+  },
+};
+
+export const DEFAULT_COUNCIL = [
+  "producto",
+  "ux",
+  "arquitectura",
+  "qa",
+  "seguridad",
+];
+
+const COUNCIL_ALIASES = {
+  product: "producto",
+  pm: "producto",
+  design: "ux",
+  ui: "ux",
+  architecture: "arquitectura",
+  architect: "arquitectura",
+  security: "seguridad",
+  sec: "seguridad",
+  performance: "rendimiento",
+  perf: "rendimiento",
+  latency: "rendimiento",
+  sre: "devops",
+  marketing: "growth",
+  data: "datos",
+  analytics: "datos",
+  test: "qa",
+  testing: "qa",
+};
+
+const councilKey = (word) => {
+  const key = String(word ?? "")
+    .toLowerCase()
+    .replace(/^@/, "");
+  return COUNCIL_EXPERTS[key] ? key : (COUNCIL_ALIASES[key] ?? null);
+};
+
+/**
+ * `/consejo [expertos:] tema` → { experts, topic } | { usage }.
+ * The optional prefix is a comma or space separated list of expert names
+ * ("ux, growth, producto: mejorar el onboarding"); any unknown word means
+ * the prefix is part of the topic, and the default panel is used.
+ */
+export function parseCouncilArgs(raw, max = MAX_TEAM_SIZE) {
+  const text = String(raw ?? "").trim();
+  const usage = `Uso: /consejo [expertos:] tema\nEj.: /consejo mejorar el onboarding\n     /consejo ux, growth, producto: por qué no convierte la landing\nExpertos: ${Object.keys(COUNCIL_EXPERTS).join(", ")}\nPor defecto: ${DEFAULT_COUNCIL.join(", ")}`;
+  if (!text) return { usage };
+  let experts = [...DEFAULT_COUNCIL];
+  let topic = text;
+  const colon = text.indexOf(":");
+  if (colon > 0) {
+    const words = text
+      .slice(0, colon)
+      .split(/[\s,]+/)
+      .filter(Boolean);
+    const keys = words.map(councilKey);
+    if (words.length && keys.every(Boolean)) {
+      experts = [...new Set(keys)];
+      topic = text.slice(colon + 1).trim();
+    }
+  }
+  if (!topic) return { usage };
+  if (experts.length < 2)
+    return { usage: `Un consejo necesita al menos 2 expertos.\n\n${usage}` };
+  return { experts: experts.slice(0, max), topic };
+}
+
+const clip = (text, max) => {
+  const value = String(text ?? "").trim() || "(no answer)";
+  return value.length > max ? `${value.slice(0, max)}\n…(truncated)` : value;
+};
+
+/** Phase 1: each expert studies the project alone and proposes. */
+export function buildCouncilProposalPrompt({
+  expert,
+  name = expert,
+  topic,
+  panel = [],
+  workingDir = "",
+}) {
+  const info = COUNCIL_EXPERTS[expert];
+  return [
+    `You are @${name}, the ${info.title} on a council of expert AI agents,`,
+    "coordinated from Telegram. Each expert studies the project on their own,",
+    "then the council debates and a moderator decides with the user.",
+    `Council: ${panel.map((name) => `@${name}`).join(", ")}.`,
+    workingDir ? `Working folder: ${workingDir}` : "",
+    `Your focus: ${info.focus}.`,
+    `Use these skills where they fit: ${info.skills.join(", ")}, qdrant-memory.`,
+    "",
+    "This phase is READ-ONLY: do not edit files, commit, install packages, or",
+    "run anything with side effects. Look for existing knowledge first",
+    "(qdrant-memory qdrant-find, docs/wiki, README, AGENTS.md), then the code.",
+    "",
+    "Answer in Spanish, under 500 words, in this format:",
+    "## Diagnóstico",
+    "3 to 6 bullets, each with evidence (path:line, a command output, a metric).",
+    "## Propuestas",
+    `At most 4, each starting with its id: \`${name}-P1: title\`, then`,
+    "impact (alto/medio/bajo), effort (S/M/L), risk, confidence, why,",
+    "the evidence, and how to measure success.",
+    "## Riesgos",
+    "What could go wrong, and what you would NOT do.",
+    "## Preguntas",
+    "What the user must decide or clarify.",
+    "",
+    `Topic: ${topic}`,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+/** Phase 2: each expert reads the others' proposals, argues, and votes. */
+export function buildCouncilDebatePrompt({ expert, topic, positions }) {
+  const others = positions.filter((item) => item.name !== expert);
+  return [
+    `Debate round of the council on: ${topic}`,
+    "Here are the other experts' positions:",
+    "",
+    ...others.map((item) => `### @${item.name}\n${clip(item.text, 3500)}\n`),
+    "Debate them from your area, still READ-ONLY, in Spanish, under 400 words:",
+    "- Where you agree, say so briefly. Where you disagree, say why, with",
+    "  evidence from the code. Point out conflicts with your area (for example",
+    "  a UX proposal that breaks security, or a refactor without tests).",
+    "- You may merge proposals, or add at most one new one with a new id",
+    `  (\`${expert}-P5\`, …). Change your mind when the evidence is better.`,
+    "- End with exactly one line with your top 3 proposals of the whole",
+    "  council, best first, using their ids, and at most one of your own:",
+    "VOTOS: id-1, id-2, id-3",
+  ].join("\n");
+}
+
+/** The ids from the last `VOTOS:` (or `VOTES:`) line of a debate answer. */
+export function parseVotes(text) {
+  const lines = String(text ?? "")
+    .replace(/\*\*|`/g, "")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*vot(?:os|es)\s*:/i.test(line));
+  if (!lines.length) return [];
+  const ids = lines
+    .at(-1)
+    .replace(/^\s*vot(?:os|es)\s*:/i, "")
+    .match(/[a-z0-9_]+(?:-[a-z0-9_]+)*-p\d+/gi);
+  return [...new Set((ids ?? []).map((id) => id.toLowerCase()))].slice(0, 3);
+}
+
+/**
+ * Borda count of the debate votes: 3, 2 and 1 points for each voter's
+ * first, second and third choice. Returns [{ id, points, voters }] sorted.
+ */
+export function tallyVotes(debate) {
+  const scores = new Map();
+  for (const { name, text } of debate) {
+    parseVotes(text).forEach((id, index) => {
+      const entry = scores.get(id) ?? { id, points: 0, voters: [] };
+      entry.points += 3 - index;
+      entry.voters.push(name);
+      scores.set(id, entry);
+    });
+  }
+  return [...scores.values()].sort(
+    (a, b) => b.points - a.points || a.id.localeCompare(b.id),
+  );
+}
+
+export function formatTally(tally, limit = 8) {
+  if (!tally.length) return "(nadie votó)";
+  return tally
+    .slice(0, limit)
+    .map(
+      (entry, index) =>
+        `${index + 1}. ${entry.id} — ${entry.points} pts (${entry.voters.map((name) => `@${name}`).join(", ")})`,
+    )
+    .join("\n");
+}
+
+/** Phase 3: the moderator weighs everything, decides, and plans. */
+export function buildCouncilDecisionPrompt({
+  topic,
+  proposals,
+  debate,
+  tally,
+  workingDir = "",
+  max = MAX_TEAM_SIZE,
+}) {
+  return [
+    "You are the moderator of a council of expert AI agents. They studied the",
+    "project in parallel, proposed, debated each other and voted. Decide.",
+    workingDir ? `Working folder: ${workingDir}` : "",
+    `Topic: ${topic}`,
+    "",
+    "## Proposals",
+    ...proposals.map((item) => `### @${item.name}\n${clip(item.text, 3000)}\n`),
+    "## Debate",
+    ...debate.map((item) => `### @${item.name}\n${clip(item.text, 2500)}\n`),
+    "## Votes (Borda: 3/2/1 points)",
+    formatTally(tally, 12),
+    "",
+    "Weigh evidence over vote counts: votes are an input, not the decision.",
+    "Check any claim you doubt in the code (read-only). Answer in Spanish:",
+    "## Decisión — two or three sentences.",
+    "## Consenso — what the experts agree on.",
+    "## Desacuerdos — who disagrees and why, how you resolved it, or what the",
+    "   user must decide.",
+    "## Matriz — table: id | propuesta | impacto | esfuerzo | riesgo | votos |",
+    "   decisión (ahora / después / descartar).",
+    "## ADR — context, decision, alternatives considered, consequences.",
+    "",
+    "Save the decision with qdrant-memory (qdrant-store), one short entry:",
+    '"Decisión <fecha> <tema>: <decisión> (descartado: …)", so future agents',
+    "don't reopen it.",
+    "",
+    "Follow change-safety-guard: before the plan, list anything it would",
+    "delete, replace or touch in data, secrets, auth, payments, infra or",
+    "dependencies. Do not do the work yourself. End with the plan for the",
+    `"ahora" items, at most ${max} lines, one per agent, that can run in parallel`,
+    "without editing the same files, including a QA agent when code changes:",
+    "@short-name: what to do, which files or area, and what done looks like",
+    "The user approves the plan in Telegram before anything runs.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }

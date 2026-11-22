@@ -107,7 +107,7 @@ Replies to an agent's message and `@name message` always go to that agent.
 | --- | --- |
 | `/new <task>` | Starts a new agent with the task and makes it the active one. |
 | `/new @name <task>` | The same, with a name you can address (`@name`). |
-| `/team [@name] <task>` | Starts a **lead** agent that studies the project and splits the work into up to 6 subtasks. Its plan comes with a **Distribute** button that starts one sub-agent per subtask. |
+| `/team [@name] <task>` | Starts a **lead** agent that studies the project and splits the work into up to 6 subtasks. Its plan comes with a **Repartir** (distribute) button that starts one sub-agent per subtask. |
 | `/dispatch` + lines | Hands out tasks yourself, one per line: `@name task`. An existing agent with that name gets a message; a new name starts a new agent. |
 | `/dir [path]` | Shows or sets the folder the next agents work in, e.g. `/dir /documents/dracma-web`. `/dir reset` goes back to the default. |
 | `/agents` | Lists this chat's agents with their status. ▶️ marks the active one. |
@@ -139,6 +139,37 @@ so (fixes go through feature branches and PRs).
 | `/migrate <from → to>` | `migration-modernization` | A step-by-step plan for approval, then one PR per step. |
 | `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
 
+### Expert council: parallel work, debate and decisions
+
+`/consejo [experts:] <topic>` runs a council of expert agents in three phases:
+
+1. **Proposals, in parallel.** One read-only agent per expert studies the
+   project on its own (memory, wiki, code) and writes a diagnosis with
+   evidence and up to 4 proposals, each with an id (`ux-P1`), impact, effort,
+   risk and how to measure success.
+2. **Debate and vote.** When all have answered, each expert gets the others'
+   proposals, argues where it disagrees (with evidence from the code), may
+   merge proposals or change its mind, and ends with `VOTOS: id, id, id`. The
+   bridge counts the votes (Borda: 3/2/1 points; at most one of your own).
+3. **Decision.** `@moderador` weighs evidence over votes and writes the
+   decision, consensus and disagreements, a decision matrix, a short ADR, and
+   a plan of `@name: task` lines. It saves the decision to memory, so later
+   agents don't reopen it. The plan comes with a **Repartir** (distribute) button: the
+   team then works in parallel, each agent on its own worktree and draft PR,
+   and the moderator integrates them into one PR.
+
+Nothing changes in the code until you approve the plan. Experts: `producto`,
+`ux`, `frontend`, `backend`, `arquitectura`, `qa`, `seguridad`,
+`rendimiento`, `devops`, `growth`, `datos` (English aliases work too: `pm`,
+`security`, `perf`, `marketing`, `data`…). Default panel: producto, ux,
+arquitectura, qa, seguridad; at most 6. `/consejo` alone lists them and the
+councils in progress. `/bot consejo` runs one every Thursday.
+
+```
+/dir /documents/dracma-web
+/consejo ux, growth, producto, frontend: por qué no convierte la landing
+```
+
 ### Bots and scheduled tasks
 
 A **bot** is a scheduled request that owns one outcome. `/bots` lists the
@@ -150,6 +181,7 @@ templates; `/bot <template> [when]` turns one on for this chat and folder:
 | `scans` | Wednesday 09:00 | `/scan quality` |
 | `security` | Friday 09:00 | `/security` (read-only) |
 | `deps` | Monday 08:00 | `/scan dependencies` |
+| `consejo` | Thursday 10:00 | An expert council proposes the week's top 3 product improvements |
 | `wiki` | Sunday 20:00 | `/wiki`, updating only pages whose code changed |
 | `qa` | weekdays 18:00 | Tests the day's PRs in an isolated container |
 

@@ -7,6 +7,15 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  COUNCIL_EXPERTS,
+  DEFAULT_COUNCIL,
+  buildCouncilDebatePrompt,
+  buildCouncilDecisionPrompt,
+  buildCouncilProposalPrompt,
+  formatTally,
+  parseCouncilArgs,
+  parseVotes,
+  tallyVotes,
   buildInsightsPrompt,
   buildSkillRequest,
   chunkText,
@@ -702,5 +711,97 @@ describe("session insights", () => {
     expect(url).toBe(
       "http://x/api/conversations/c1/events/search?limit=100&sort_order=TIMESTAMP&page_id=p2",
     );
+  });
+});
+
+describe("expert council", () => {
+  it("uses the default panel, or the experts named before the colon", () => {
+    expect(parseCouncilArgs("mejorar el onboarding")).toEqual({
+      experts: DEFAULT_COUNCIL,
+      topic: "mejorar el onboarding",
+    });
+    expect(
+      parseCouncilArgs("ux, growth, marketing, perf: por qué no convierte"),
+    ).toEqual({
+      experts: ["ux", "growth", "rendimiento"],
+      topic: "por qué no convierte",
+    });
+    // An unknown word means the colon belongs to the topic.
+    expect(parseCouncilArgs("objetivo: subir la retención").experts).toEqual(
+      DEFAULT_COUNCIL,
+    );
+    expect(parseCouncilArgs("").usage).toMatch(/Uso: \/consejo/);
+    expect(parseCouncilArgs("ux: algo").usage).toMatch(/al menos 2/);
+  });
+
+  it("every expert and the default panel exist", () => {
+    for (const key of DEFAULT_COUNCIL)
+      expect(COUNCIL_EXPERTS[key]).toBeTruthy();
+    const prompt = buildCouncilProposalPrompt({
+      expert: "ux",
+      name: "ux-2",
+      topic: "checkout",
+      panel: ["ux", "qa"],
+    });
+    expect(prompt).toContain("You are @ux-2, the UX/UI designer");
+    expect(prompt).toContain("`ux-2-P1: title`");
+    expect(prompt).toMatch(/READ-ONLY/);
+  });
+
+  it("debate shows only the other experts and asks for votes", () => {
+    const prompt = buildCouncilDebatePrompt({
+      expert: "ux",
+      topic: "checkout",
+      positions: [
+        { name: "ux", text: "MINE" },
+        { name: "qa", text: "QA VIEW" },
+      ],
+    });
+    expect(prompt).toContain("@qa");
+    expect(prompt).toContain("QA VIEW");
+    expect(prompt).not.toContain("MINE");
+    expect(prompt).toContain("VOTOS:");
+  });
+
+  it("reads the last votes line and counts Borda points", () => {
+    expect(
+      parseVotes(
+        "blah\nVOTOS: ux-P1, qa-P2\n**Votos:** qa-p2, ux-2-P3, x-P1, y-P1",
+      ),
+    ).toEqual(["qa-p2", "ux-2-p3", "x-p1"]);
+    expect(parseVotes("sin votos")).toEqual([]);
+    const tally = tallyVotes([
+      { name: "ux", text: "VOTOS: qa-P1, ux-P1, sec-P2" },
+      { name: "qa", text: "VOTOS: ux-P1, qa-P1" },
+      { name: "sec", text: "nada" },
+    ]);
+    expect(tally.map(({ id, points }) => [id, points])).toEqual([
+      ["qa-p1", 5],
+      ["ux-p1", 5],
+      ["sec-p2", 1],
+    ]);
+    expect(formatTally(tally)).toContain("qa-p1 — 5 pts (@ux, @qa)");
+    expect(formatTally([])).toBe("(nadie votó)");
+  });
+
+  it("the moderator weighs evidence and ends with a plan", () => {
+    const prompt = buildCouncilDecisionPrompt({
+      topic: "checkout",
+      proposals: [{ name: "ux", text: "P" }],
+      debate: [{ name: "ux", text: "D" }],
+      tally: [{ id: "ux-p1", points: 3, voters: ["ux"] }],
+    });
+    expect(prompt).toMatch(/evidence over vote counts/);
+    expect(prompt).toContain("qdrant-store");
+    expect(prompt).toContain("@short-name:");
+  });
+
+  it("ships a weekly council bot", () => {
+    expect(BOT_TEMPLATES.consejo.text).toMatch(/^\/consejo /);
+    expect(
+      parseScheduleArgs(
+        `${BOT_TEMPLATES.consejo.when} ${BOT_TEMPLATES.consejo.text}`,
+      ).text,
+    ).toBe(BOT_TEMPLATES.consejo.text);
   });
 });
