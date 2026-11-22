@@ -7,6 +7,13 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  McpHttpClient,
+  TelegramClient,
+  parsePenAppState,
+  parsePenNodeList,
+  penExportSnippet,
+  pickPenNodes,
+  toPenHostPath,
   COUNCIL_EXPERTS,
   DEFAULT_COUNCIL,
   buildCouncilDebatePrompt,
@@ -815,5 +822,108 @@ describe("design command", () => {
     expect(COUNCIL_EXPERTS.frontend.skills.join(" ")).toContain(
       "pencil-design",
     );
+  });
+});
+
+describe("pen.dev screenshots", () => {
+  const appState = [
+    "## Canvas Editor",
+    "- Currently active canvas editor URI: `file:///Volumes/X/fintech/dracma%20final.pen`",
+    "- Top-level nodes: `I98pva` (frame): Dracma · Dashboard · Mega menú cerrado [user visible], `Wbxta` (browser): Web local [user visible], `I7gNe` (frame): Dracma · Wallet [user visible], `oKXaX` (frame): Asset · Card stack [outside viewport], ... +272 others",
+  ].join("\n");
+
+  it("reads the open document and its top-level nodes", () => {
+    const { uri, nodes } = parsePenAppState(appState);
+    expect(uri).toBe("file:///Volumes/X/fintech/dracma%20final.pen");
+    expect(nodes).toHaveLength(4);
+    expect(nodes[0]).toEqual({
+      id: "I98pva",
+      type: "frame",
+      name: "Dracma · Dashboard · Mega menú cerrado",
+      visible: true,
+    });
+    expect(nodes[3].visible).toBe(false);
+    expect(parsePenAppState("nothing open").uri).toBeNull();
+  });
+
+  it("picks visible frames, an id, or frames matching every word", () => {
+    const { nodes } = parsePenAppState(appState);
+    expect(pickPenNodes(nodes).map((n) => n.id)).toEqual(["I98pva", "I7gNe"]);
+    expect(pickPenNodes(nodes, "oKXaX").map((n) => n.id)).toEqual(["oKXaX"]);
+    expect(pickPenNodes(nodes, "dashboard MENU").map((n) => n.id)).toEqual([
+      "I98pva",
+    ]);
+    expect(pickPenNodes(nodes, "nada")).toEqual([]);
+  });
+
+  it("maps container paths to the host and builds the export call", () => {
+    const env = { PEN_HOST_DOCUMENTS_DIR: "/Users/me/Documents/" };
+    expect(toPenHostPath("/documents/.pen-shots", env)).toBe(
+      "/Users/me/Documents/.pen-shots",
+    );
+    expect(toPenHostPath("/projects/x", env)).toBeNull();
+    expect(penExportSnippet(["a", "b"], "/h/dir")).toBe(
+      'Export(["a","b"],"png","/h/dir",{scale:1})',
+    );
+    expect(
+      parsePenNodeList('x\n[{"id":"a","type":"frame","name":"A"}]\n'),
+    ).toEqual([{ id: "a", type: "frame", name: "A" }]);
+    expect(parsePenNodeList("OK")).toEqual([]);
+  });
+
+  it("MCP client initializes once and returns tool text", async () => {
+    const calls: { body: any; headers: Record<string, string> }[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ body, headers: init.headers });
+      if (!body.id) return new Response(null, { status: 202 });
+      const result =
+        body.method === "initialize"
+          ? {}
+          : { content: [{ type: "text", text: "hola" }] };
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: body.id, result }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "mcp-session-id": "s1",
+          },
+        },
+      );
+    });
+    const client = new McpHttpClient({
+      url: "http://g/mcp",
+      token: "t",
+      fetchImpl,
+    });
+    expect(await client.callTool("get_app_state")).toEqual({
+      text: "hola",
+      isError: false,
+    });
+    await client.callTool("get_app_state");
+    expect(calls.map((c) => c.body.method)).toEqual([
+      "initialize",
+      "notifications/initialized",
+      "tools/call",
+      "tools/call",
+    ]);
+    expect(calls[0].headers.Authorization).toBe("Bearer t");
+    expect(calls[2].headers["Mcp-Session-Id"]).toBe("s1");
+  });
+
+  it("sends a photo as multipart form data", async () => {
+    const fetchImpl = vi.fn(async (url: string, init: any) => {
+      expect(url).toBe("https://api.telegram.org/botT/sendPhoto");
+      expect(init.body.get("chat_id")).toBe("42");
+      expect(init.body.get("caption")).toBe("Wallet");
+      expect(init.body.get("photo")).toBeInstanceOf(Blob);
+      return new Response(
+        JSON.stringify({ ok: true, result: { message_id: 1 } }),
+      );
+    });
+    const telegram = new TelegramClient({ token: "T", fetchImpl });
+    await telegram.sendPhoto(42, Buffer.from("png"), { caption: "Wallet" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });

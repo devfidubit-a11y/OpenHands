@@ -54,5 +54,10 @@ agents report it and carry on without Pencil.
 /consejo ux, frontend, producto: mejorar el onboarding
 ```
 
+`/pen` takes a photo without any agent: the bridge asks the Pen app for the
+open file, exports the frames visible on the canvas (or `/pen wallet`, `/pen
+<id>`; `/pen lista` lists them) as PNG into `Documents/.pen-shots/`, posts
+them to the chat, and deletes the files.
+
 Agents never read `.pen` files as text (they are encrypted), and they ask
 before saving changes to an existing design file.

@@ -11,10 +11,19 @@
  * See docs/TELEGRAM.md for setup and the full command list.
  */
 
+import { readFile, rm } from "node:fs/promises";
+
 import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  McpHttpClient,
+  PEN_LIST_SNIPPET,
+  parsePenAppState,
+  parsePenNodeList,
+  penExportSnippet,
+  pickPenNodes,
+  toPenHostPath,
   COUNCIL_EXPERTS,
   buildCouncilDebatePrompt,
   buildCouncilDecisionPrompt,
@@ -82,6 +91,7 @@ Agentes expertos (los reparte @coordinador):
 /security [enfoque] — auditoría de seguridad (solo lectura)
 /migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
 /insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
+/pen [pantalla|id|lista] — foto de las pantallas abiertas en pen.dev (o de la que nombres)
 /design <tarea> — frontend con pen.dev: diseño .pen → código (o código → diseño) vía Pencil MCP
 
 Consejo de expertos (trabajan en paralelo, debaten y votan):
@@ -122,6 +132,7 @@ const COMMANDS = [
   ["security", "Auditoría de seguridad"],
   ["migrate", "Migración por pasos"],
   ["insights", "Analizar la sesión de un agente"],
+  ["pen", "Foto de una pantalla de pen.dev"],
   ["design", "Frontend con diseños de pen.dev"],
   ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
   ["bots", "Plantillas de bots"],
@@ -637,6 +648,11 @@ async function handleCommand(chatId, command, args, messageId) {
       return addSchedule(chatId, args);
     }
 
+    case "pen":
+    case "foto":
+    case "screen":
+      return penScreenshots(chatId, args, messageId);
+
     case "consejo":
     case "council":
     case "debate": {
@@ -906,6 +922,120 @@ async function advanceCouncil(chatId, council) {
     {},
     moderator,
   );
+}
+
+const PEN_SHOTS_DIR = "/documents/.pen-shots";
+
+/**
+ * /pen: exports design frames from the Pen app through the pencil MCP and
+ * posts them as photos. No agent involved; the Pen app must be open.
+ */
+async function penScreenshots(chatId, args, messageId) {
+  if (!config.penMcpUrl) {
+    return say(
+      chatId,
+      "pen.dev no está conectado: falta PEN_MCP_URL en docker/.env (docs/PENCIL.md).",
+    );
+  }
+  const hostDir = toPenHostPath(PEN_SHOTS_DIR);
+  if (!hostDir) {
+    return say(chatId, "Falta PEN_HOST_DOCUMENTS_DIR en docker/.env.");
+  }
+  const reply = messageId ? { replyTo: messageId } : {};
+  const pen = new McpHttpClient({
+    url: config.penMcpUrl,
+    token: config.penMcpToken,
+  });
+  try {
+    const appState = await pen.callTool("get_app_state");
+    const { uri, nodes } = parsePenAppState(appState.text);
+    if (!uri) {
+      return say(
+        chatId,
+        "No hay ningún archivo .pen abierto en la app Pen. Ábrelo y repite /pen.",
+        reply,
+      );
+    }
+    const query = args.trim();
+    const file = decodeURIComponent(uri.split("/").pop() ?? uri);
+    let all = nodes;
+    if (query) {
+      const listed = await pen.callTool("execute", {
+        uri,
+        description: "List top-level frames for Telegram",
+        input: PEN_LIST_SNIPPET,
+      });
+      const full = parsePenNodeList(listed.text);
+      if (full.length) {
+        const seen = new Set(nodes.map((node) => node.id));
+        all = [...nodes, ...full.filter((node) => !seen.has(node.id))];
+      }
+    }
+    if (/^(lista|list|ls)$/i.test(query)) {
+      const frames = all.filter((node) => node.type === "frame");
+      return say(
+        chatId,
+        `🎨 ${file}: ${frames.length} pantallas\n${frames
+          .slice(0, 60)
+          .map((node) => `• ${node.name} (${node.id})`)
+          .join(
+            "\n",
+          )}${frames.length > 60 ? "\n…" : ""}\n\n/pen <nombre o id> para la foto.`,
+        reply,
+      );
+    }
+    const picked = pickPenNodes(all, query);
+    if (!picked.length) {
+      return say(
+        chatId,
+        `No encontré "${query}" en ${file}. Usa /pen lista para ver las pantallas.`,
+        reply,
+      );
+    }
+    await say(
+      chatId,
+      `📸 Exportando ${picked.length} pantalla${picked.length === 1 ? "" : "s"} de ${file}…`,
+      reply,
+    );
+    const exported = await pen.callTool("execute", {
+      uri,
+      description: "Export frames for Telegram",
+      input: penExportSnippet(
+        picked.map((node) => node.id),
+        hostDir,
+      ),
+    });
+    if (exported.isError) throw new Error(exported.text.slice(0, 300));
+    for (const node of picked) {
+      const path = `${PEN_SHOTS_DIR}/${node.id}.png`;
+      try {
+        const data = await readFile(path);
+        const caption = `${node.name} · ${file}`;
+        await telegram
+          .sendPhoto(chatId, data, { caption, filename: `${node.id}.png` })
+          .catch(() =>
+            telegram.sendPhoto(chatId, data, {
+              caption,
+              filename: `${node.id}.png`,
+              asDocument: true,
+            }),
+          );
+      } catch (error) {
+        await say(chatId, `⚠️ ${node.name}: ${error.message}`);
+      } finally {
+        await rm(path, { force: true }).catch(() => {});
+      }
+    }
+    return null;
+  } catch (error) {
+    return say(
+      chatId,
+      `⚠️ No pude hablar con pen.dev: ${error.message}\n¿Está abierta la app Pen y el servicio pen-mcp-gateway en el Mac?`,
+      reply,
+    );
+  } finally {
+    await pen.close();
+  }
 }
 
 function addSchedule(chatId, args, extra = {}) {

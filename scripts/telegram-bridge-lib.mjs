@@ -74,6 +74,9 @@ export function loadConfig(env = process.env) {
         : 180_000,
     // Time zone for /schedule and /bot times ("lunes 09:00").
     timeZone: validTimeZone(env.TELEGRAM_TIMEZONE?.trim() || env.TZ?.trim()),
+    // pen.dev MCP gateway for /pen screenshots (docs/PENCIL.md).
+    penMcpUrl: env.PEN_MCP_URL?.trim() || "",
+    penMcpToken: env.PEN_MCP_TOKEN?.trim() || "",
   };
 }
 
@@ -765,6 +768,34 @@ export class TelegramClient {
       );
     }
     return sent;
+  }
+
+  /**
+   * Sends an image (Buffer) as a photo, or as a file when `asDocument` (no
+   * recompression, for large or very tall designs).
+   */
+  async sendPhoto(
+    chatId,
+    data,
+    { caption = "", filename = "image.png", asDocument = false } = {},
+  ) {
+    const method = asDocument ? "sendDocument" : "sendPhoto";
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    if (caption) form.append("caption", caption.slice(0, 1024));
+    form.append(
+      asDocument ? "document" : "photo",
+      new Blob([data], { type: "image/png" }),
+      filename,
+    );
+    const response = await this.fetch(`${this.base}/${method}`, {
+      method: "POST",
+      body: form,
+    });
+    const result = await response.json();
+    if (!result.ok)
+      throw new Error(`Telegram ${method} failed: ${result.description}`);
+    return result.result;
   }
 
   answerCallback(id, text) {
@@ -1566,4 +1597,173 @@ export function buildCouncilDecisionPrompt({
   ]
     .filter((line) => line !== "")
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// pen.dev screenshots: the bridge talks to the pencil MCP directly (no agent)
+// to export design frames as PNG and send them to the chat.
+// ---------------------------------------------------------------------------
+
+/** Minimal MCP Streamable HTTP client (JSON or SSE responses). */
+export class McpHttpClient {
+  constructor({
+    url,
+    token = "",
+    fetchImpl = fetch,
+    clientName = "telegram-bridge",
+  }) {
+    this.url = url;
+    this.token = token;
+    this.fetch = fetchImpl;
+    this.clientName = clientName;
+    this.sessionId = null;
+    this.nextId = 1;
+  }
+
+  async post(message) {
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+    const response = await this.fetch(this.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(message),
+    });
+    const session = response.headers.get("mcp-session-id");
+    if (session) this.sessionId = session;
+    if (response.status === 202) return null;
+    if (!response.ok) throw new Error(`MCP HTTP ${response.status}`);
+    const text = await response.text();
+    if (
+      (response.headers.get("content-type") ?? "").includes("text/event-stream")
+    ) {
+      const events = text
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => JSON.parse(line.slice(5)));
+      return (
+        events.find((event) => event.id === message.id) ?? events.at(-1) ?? null
+      );
+    }
+    return text ? JSON.parse(text) : null;
+  }
+
+  async request(method, params = {}) {
+    const id = this.nextId++;
+    const reply = await this.post({ jsonrpc: "2.0", id, method, params });
+    if (reply?.error) throw new Error(reply.error.message ?? "MCP error");
+    return reply?.result;
+  }
+
+  async connect() {
+    if (this.sessionId) return;
+    await this.request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: this.clientName, version: "1.0.0" },
+    });
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" });
+  }
+
+  /** Calls a tool; returns { text, isError }. */
+  async callTool(name, args = {}) {
+    await this.connect();
+    const result = await this.request("tools/call", { name, arguments: args });
+    const text = (result?.content ?? [])
+      .filter((item) => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+    return { text, isError: Boolean(result?.isError) };
+  }
+
+  async close() {
+    if (!this.sessionId) return;
+    const headers = { "Mcp-Session-Id": this.sessionId };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    await this.fetch(this.url, { method: "DELETE", headers }).catch(() => {});
+    this.sessionId = null;
+  }
+}
+
+/** The active document and the top-level nodes the user sees, from get_app_state. */
+export function parsePenAppState(text) {
+  const value = String(text ?? "");
+  const uri = /active canvas editor URI:\s*`([^`]+)`/i.exec(value)?.[1] ?? null;
+  const line = /Top-level nodes:(.*)/i.exec(value)?.[1] ?? "";
+  const nodes = [
+    ...line.matchAll(/`([^`]+)` \((\w+)\): (.+?) \[([^\]]+)\]/g),
+  ].map(([, id, type, name, where]) => ({
+    id,
+    type,
+    name: name.trim(),
+    visible: /user visible/i.test(where),
+  }));
+  return { uri, nodes };
+}
+
+const foldText = (text) =>
+  String(text ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+export const PEN_SHOT_TYPES = new Set(["frame", "group", "ref", "variants"]);
+
+/**
+ * Picks the nodes to export: an exact id, the frames whose name contains
+ * every word of the query, or (no query) the frames visible on the canvas.
+ */
+export function pickPenNodes(nodes, query = "", max = 4) {
+  const shots = nodes.filter((node) => PEN_SHOT_TYPES.has(node.type));
+  const q = String(query ?? "").trim();
+  if (!q) {
+    const visible = shots.filter((node) => node.visible);
+    return (visible.length ? visible : shots).slice(0, max);
+  }
+  const exact = nodes.find((node) => node.id === q);
+  if (exact) return [exact];
+  const words = foldText(q).split(/\s+/).filter(Boolean);
+  return shots
+    .filter((node) => words.every((word) => foldText(node.name).includes(word)))
+    .slice(0, max);
+}
+
+/** pen.dev `execute` snippet that lists the document's top-level nodes. */
+export const PEN_LIST_SNIPPET =
+  "Print(JSON.stringify(Get(document,(n,c)=>{c.skipChildren();return {id:n.id,type:n.type,name:n.name}})))";
+
+export function penExportSnippet(ids, hostDir, scale = 1) {
+  return `Export(${JSON.stringify(ids)},"png",${JSON.stringify(hostDir)},{scale:${Number(scale) || 1}})`;
+}
+
+/** The JSON array printed by PEN_LIST_SNIPPET, or []. */
+export function parsePenNodeList(text) {
+  const match = /^\s*(\[.*\])\s*$/m.exec(String(text ?? ""));
+  if (!match) return [];
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Maps a container path under /documents or /projects to the host path the
+ * Pen app sees (PEN_HOST_DOCUMENTS_DIR / PEN_HOST_PROJECTS_DIR), or null.
+ */
+export function toPenHostPath(path, env = process.env) {
+  const roots = [
+    ["/documents", env.PEN_HOST_DOCUMENTS_DIR],
+    ["/projects", env.PEN_HOST_PROJECTS_DIR],
+  ];
+  for (const [root, host] of roots) {
+    if (!host) continue;
+    if (path === root || path.startsWith(`${root}/`)) {
+      return `${host.replace(/\/+$/, "")}${path.slice(root.length)}`;
+    }
+  }
+  return null;
 }
