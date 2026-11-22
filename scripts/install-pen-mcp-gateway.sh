@@ -67,8 +67,13 @@ chmod 600 "$PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-sleep 1
-if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null; then
+# The previous instance may still be stopping: wait up to 10 seconds.
+ok=""
+for _ in $(seq 1 20); do
+  if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then ok=1; break; fi
+  sleep 0.5
+done
+if [ -n "$ok" ]; then
   echo "pen.dev MCP gateway running on http://127.0.0.1:$PORT/mcp (log: $LOG_DIR/pen-mcp-gateway.log)"
 else
   echo "Installed, but the health check failed; see $LOG_DIR/pen-mcp-gateway.log" >&2
