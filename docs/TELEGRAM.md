@@ -136,6 +136,23 @@ any agent, or talk to one with `@name <message>`. A loop guard limits each
 agent to 6 messages to other agents per hour; council experts debate through
 the council's rounds instead.
 
+**While they work**, agents also have the `agent_chat` MCP tools, served by
+the bridge on `127.0.0.1:18790` (`TELEGRAM_CHAT_MCP_PORT`, 0 = off) and
+registered for every OpenHands and ACP agent:
+
+| Tool | Does |
+| --- | --- |
+| `chat_agents` | Who is in the chat, their role and status |
+| `chat_history` | The last 40 messages of the chat (humans and agents) |
+| `chat_send` | Message another agent; posted as `💬 @a → @b`, its answer comes back as a new message |
+| `chat_post` | A short update for the humans (`🤖 @a: …`); replies go back to the agent |
+| `chat_ask_human` | A question for the humans (`❓ @a pregunta: …`); reply to it to answer |
+
+So agents coordinate on their own: the UX agent asks `@pen` to fix a
+spacing issue, `@frontend` tells `@qa` a branch is ready, anyone asks you
+when a decision is yours. Limits: 6 agent messages and 20 posts or questions
+per agent per hour.
+
 ### Projects: one chat or topic per project
 
 To run many projects from one bot, give each its own **scope**. A scope is a

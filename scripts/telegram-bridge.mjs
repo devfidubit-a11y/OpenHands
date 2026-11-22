@@ -11,13 +11,19 @@
  * See docs/TELEGRAM.md for setup and the full command list.
  */
 
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { readFile, rm } from "node:fs/promises";
 
 import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  CHAT_MCP_KEY,
+  appendChatLog,
+  formatChatLog,
+  handleMcpMessage,
   allowRelay,
   buildAgentNetworkNote,
   buildRelayPrompt,
@@ -178,6 +184,7 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 async function say(chatId, text, extra = {}, agent = null) {
   const sent = await telegram.sendText(chatId, text, extra);
+  appendChatLog(state.chat(chatId), "bot", text);
   if (agent) {
     for (const message of sent)
       state.rememberMessage(chatId, message.message_id, agent.id);
@@ -325,7 +332,7 @@ async function createAgent(
   const others = chat.agents.map((item) => item.name);
   const conversation = await server.createConversation({
     profileId,
-    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others)}${task}`,
+    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others, config.chatMcpPort ? String(chatId) : "")}${task}`,
     workingDir: dir,
     chatId,
     project: chat.project ?? null,
@@ -756,6 +763,12 @@ async function handleMessage(message) {
     log("ignored unauthorized chat", chatId, "user", message.from?.id);
     return;
   }
+
+  appendChatLog(
+    state.chat(chatId),
+    message.from?.first_name || message.from?.username || "humano",
+    message.text,
+  );
 
   if (parsed.kind === "command") {
     return handleCommand(
@@ -1639,6 +1652,201 @@ async function pollTelegram() {
   }
 }
 
+// ── agent_chat MCP server ──────────────────────────────────────────────────
+
+function chatContext({ chat, from }) {
+  const scope = String(chat ?? "");
+  if (
+    !state.chats[scope] ||
+    !config.allowedChats.has(splitScope(scope).chatId)
+  ) {
+    throw new Error(
+      `Unknown chat "${scope}". Use the chat id from your first message.`,
+    );
+  }
+  const room = state.chat(scope);
+  const name = String(from ?? "")
+    .replace(/^@/, "")
+    .toLowerCase();
+  const agent = room.agents.find((item) => item.name === name);
+  if (!agent)
+    throw new Error(`No agent @${name} in this chat. Use your own name.`);
+  return { scope, room, agent };
+}
+
+const MAX_POSTS_PER_HOUR = 20;
+
+const chatHandlers = {
+  async chat_agents(args) {
+    const { room } = chatContext(args);
+    return room.agents
+      .map((item) => {
+        const role = item.coordinator
+          ? "coordinator"
+          : item.penAgent
+            ? "pen.dev design"
+            : item.uxAgent
+              ? "UX review"
+              : item.expert
+                ? `council expert (${item.expert})`
+                : item.team
+                  ? "team member"
+                  : "agent";
+        return `@${item.name} — ${role}, ${item.lastStatus ?? "unknown"}`;
+      })
+      .join("\n");
+  },
+  async chat_history(args) {
+    const { room } = chatContext(args);
+    return formatChatLog(room.log, args.limit);
+  },
+  async chat_send(args) {
+    const { scope, room, agent } = chatContext(args);
+    const to = String(args.to ?? "")
+      .replace(/^@/, "")
+      .toLowerCase();
+    const target = room.agents.find((item) => item.name === to);
+    if (!target) throw new Error(`No agent @${to} here. Call chat_agents.`);
+    if (target.id === agent.id) throw new Error("That's you.");
+    if (!allowRelay(agent)) {
+      throw new Error(
+        "Too many messages to other agents this hour. Ask the humans with chat_ask_human.",
+      );
+    }
+    const text = String(args.text ?? "").trim();
+    if (!text) throw new Error("Empty message.");
+    await say(
+      scope,
+      `💬 @${agent.name} → @${target.name}: ${text}`,
+      {},
+      target,
+    );
+    await server.sendMessage(target.id, buildRelayPrompt(agent.name, text));
+    markPending(target);
+    save();
+    return `Sent to @${target.name}. Its answer will arrive as a new message; keep working meanwhile.`;
+  },
+  async chat_post(args) {
+    const { scope, agent } = chatContext(args);
+    if (!allowRelay(agent, Date.now(), MAX_POSTS_PER_HOUR)) {
+      throw new Error("Too many chat posts this hour.");
+    }
+    await say(
+      scope,
+      `🤖 @${agent.name}: ${String(args.text ?? "").trim()}`,
+      {},
+      agent,
+    );
+    save();
+    return "Posted. Replies to it come back to you.";
+  },
+  async chat_ask_human(args) {
+    const { scope, agent } = chatContext(args);
+    if (!allowRelay(agent, Date.now(), MAX_POSTS_PER_HOUR)) {
+      throw new Error("Too many questions this hour.");
+    }
+    await say(
+      scope,
+      `❓ @${agent.name} pregunta: ${String(args.question ?? "").trim()}\n(Responde a este mensaje para contestarle)`,
+      {},
+      agent,
+    );
+    save();
+    return "Asked. The answer arrives as a new message; continue with what you can meanwhile.";
+  },
+};
+
+function chatMcpToken() {
+  state.chatMcpToken ??= randomBytes(24).toString("hex");
+  save();
+  return state.chatMcpToken;
+}
+
+/** Serves the agent_chat MCP tools on loopback (Streamable HTTP, JSON). */
+function startChatMcpServer() {
+  if (!config.chatMcpPort) return;
+  const token = chatMcpToken();
+  const http = createServer(async (req, res) => {
+    const send = (status, body, headers = {}) => {
+      res.writeHead(status, { "Content-Type": "application/json", ...headers });
+      res.end(body === undefined ? "" : JSON.stringify(body));
+    };
+    if (new URL(req.url ?? "/", "http://x").pathname !== "/mcp")
+      return send(404, { error: "not found" });
+    if (req.headers.authorization !== `Bearer ${token}`)
+      return send(401, { error: "unauthorized" });
+    if (req.method === "DELETE") return send(200);
+    if (req.method !== "POST")
+      return send(405, { error: "method not allowed" }, { Allow: "POST" });
+    let payload;
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      return send(400, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error" },
+      });
+    }
+    const batch = Array.isArray(payload);
+    const results = (
+      await Promise.all(
+        (batch ? payload : [payload]).map((item) =>
+          handleMcpMessage(item, chatHandlers),
+        ),
+      )
+    ).filter(Boolean);
+    const headers = { "Mcp-Session-Id": "agent-chat" };
+    if (!results.length) return send(202, undefined, headers);
+    return send(200, batch ? results : results[0], headers);
+  });
+  http.listen(config.chatMcpPort, "127.0.0.1", () =>
+    log(`agent_chat MCP on http://127.0.0.1:${config.chatMcpPort}/mcp`),
+  );
+  http.on("error", (error) => log("agent_chat MCP failed", error.message));
+}
+
+/** Registers agent_chat for every agent (unless the user disabled it). */
+async function registerChatMcp() {
+  if (!config.chatMcpPort) return;
+  const base = config.agentServerUrl.replace(/\/+$/, "");
+  const headers = { "Content-Type": "application/json" };
+  if (config.sessionApiKey) headers["X-Session-API-Key"] = config.sessionApiKey;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await fetch(`${base}/api/settings`, { headers });
+      if (response.ok) {
+        const existing = (await response.json()).agent_settings?.mcp_config?.[
+          CHAT_MCP_KEY
+        ];
+        if (existing?.enabled === false)
+          return log("agent_chat MCP disabled by the user");
+        const saved = await fetch(`${base}/api/settings/mcp/${CHAT_MCP_KEY}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            url: `http://127.0.0.1:${config.chatMcpPort}/mcp`,
+            transport: "http",
+            auth: { strategy: "bearer", value: chatMcpToken() },
+            description:
+              "Talk to the other agents and the humans of the Telegram chat",
+          }),
+        });
+        return log(
+          saved.ok
+            ? "agent_chat MCP registered for all agents"
+            : `agent_chat MCP registration failed: HTTP ${saved.status}`,
+        );
+      }
+    } catch {
+      // agent server not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+}
+
 async function main() {
   let me;
   try {
@@ -1670,6 +1878,10 @@ async function main() {
       `Telegram bridge → ${config.agentServerUrl} (chats: ${[...config.allowedChats].join(", ")})`,
     );
   }
+  startChatMcpServer();
+  registerChatMcp().catch((error) =>
+    log("agent_chat MCP registration", error.message),
+  );
   await telegram
     .setCommands(COMMANDS)
     .catch((error) => log("setMyCommands failed", error.message));

@@ -18,6 +18,10 @@ import {
   buildPenEditPrompt,
   buildPenUxPrompt,
   allowRelay,
+  CHAT_TOOLS,
+  appendChatLog,
+  formatChatLog,
+  handleMcpMessage,
   buildAgentNetworkNote,
   buildRelayPrompt,
   parseAgentMessages,
@@ -1180,5 +1184,87 @@ describe("agents talking to agents", () => {
       expect(allowRelay(agent, 1000 + i)).toBe(true);
     expect(allowRelay(agent, 2000)).toBe(false);
     expect(allowRelay(agent, 1000 + 3_600_001)).toBe(true);
+  });
+});
+
+describe("agent_chat MCP", () => {
+  const handlers = { chat_post: async (args: any) => `posted ${args.text}` };
+
+  it("speaks the MCP protocol", async () => {
+    const init = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      handlers,
+    );
+    expect(init!.result.serverInfo.name).toBe("agent_chat");
+    expect(
+      await handleMcpMessage(
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        handlers,
+      ),
+    ).toBeNull();
+    const list = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      handlers,
+    );
+    expect(list!.result.tools.map((t: any) => t.name)).toEqual(
+      CHAT_TOOLS.map((t) => t.name),
+    );
+    const call = await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "chat_post", arguments: { text: "hola" } },
+      },
+      handlers,
+    );
+    expect(call!.result.content[0].text).toBe("posted hola");
+    const failing = await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "chat_post", arguments: {} },
+      },
+      {
+        chat_post: async () => {
+          throw new Error("nope");
+        },
+      },
+    );
+    expect(failing!.result).toMatchObject({
+      isError: true,
+      content: [{ text: "nope" }],
+    });
+    expect(
+      (await handleMcpMessage(
+        { jsonrpc: "2.0", id: 5, method: "x" },
+        handlers,
+      ))!.error.code,
+    ).toBe(-32601);
+  });
+
+  it("every tool needs the chat and the caller", () => {
+    for (const tool of CHAT_TOOLS)
+      expect(tool.inputSchema.required).toEqual(
+        expect.arrayContaining(["chat", "from"]),
+      );
+  });
+
+  it("keeps a short chat log", () => {
+    const chat: any = {};
+    for (let i = 0; i < 45; i += 1)
+      appendChatLog(chat, "bot", `m${i}`, Date.UTC(2026, 0, 1, 10, i));
+    expect(chat.log).toHaveLength(40);
+    expect(formatChatLog(chat.log, 2)).toBe(
+      "[10:43] bot: m43\n[10:44] bot: m44",
+    );
+    expect(formatChatLog([], 5)).toBe("(no messages yet)");
+  });
+
+  it("tells agents their chat id for the tools", () => {
+    expect(buildAgentNetworkNote("ux", [], "-100:7")).toContain(
+      'chat="-100:7" and from="ux"',
+    );
   });
 });

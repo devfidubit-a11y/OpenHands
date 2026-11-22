@@ -77,6 +77,9 @@ export function loadConfig(env = process.env) {
     // pen.dev MCP gateway for /pen screenshots (docs/PENCIL.md).
     penMcpUrl: env.PEN_MCP_URL?.trim() || "",
     penMcpToken: env.PEN_MCP_TOKEN?.trim() || "",
+    // agent_chat MCP server (loopback) that lets agents talk while they work.
+    // 0 turns it off.
+    chatMcpPort: Number(env.TELEGRAM_CHAT_MCP_PORT ?? 18790),
   };
 }
 
@@ -193,6 +196,8 @@ export class BridgeState {
     this.projects = data.projects ?? {};
     // Group ids Telegram migrated (group → supergroup): { oldId: newId }.
     this.migrations = data.migrations ?? {};
+    // Bearer token of the agent_chat MCP server (generated once).
+    this.chatMcpToken = data.chatMcpToken ?? null;
   }
 
   /**
@@ -258,6 +263,7 @@ export class BridgeState {
       messageMap: this.messageMap,
       projects: this.projects,
       migrations: this.migrations,
+      chatMcpToken: this.chatMcpToken,
     };
   }
 
@@ -2118,13 +2124,23 @@ export function parseAgentMessages(text, max = 3) {
 }
 
 /** How agents talk to each other; added to every agent's first message. */
-export function buildAgentNetworkNote(name, others = []) {
+export function buildAgentNetworkNote(name, others = [], scope = "") {
   return [
     `You are @${name} in a Telegram chat shared by humans and AI agents.`,
     others.length
       ? `Other agents here: ${others.map((other) => `@${other}`).join(", ")}.`
       : "",
-    "To ask or tell another agent something, end your answer with a line",
+    scope
+      ? [
+          `While you work, use the agent_chat MCP tools with chat="${scope}" and from="${name}":`,
+          "chat_agents (who is here and what they do), chat_history (what was said),",
+          "chat_send (message another agent), chat_post (tell the humans something),",
+          "chat_ask_human (ask the user; the answer arrives as a new message).",
+          "Coordinate on your own: ask the agent who owns a piece instead of guessing,",
+          "share results others need, and keep messages short and useful.",
+        ].join("\n")
+      : "",
+    "You can also end your answer with lines",
     '"PARA @name: message" (one line per agent, at most 3). The bridge posts it',
     "in the chat and delivers it; their reply comes back to you the same way.",
     "Humans read everything and may answer for them. Only do it when you need",
@@ -2160,4 +2176,139 @@ export function allowRelay(agent, now = Date.now(), max = MAX_RELAYS_PER_HOUR) {
   }
   agent.relays = [...recent, now];
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// agent_chat MCP server: tools that let agents talk to each other and to the
+// humans of their chat while they work. The bridge serves it on loopback.
+// ---------------------------------------------------------------------------
+
+export const CHAT_MCP_KEY = "agent_chat";
+export const MAX_CHAT_LOG = 40;
+
+const chatArgs = (extra = {}, required = []) => ({
+  type: "object",
+  properties: {
+    chat: {
+      type: "string",
+      description: "Your chat id, from your first message",
+    },
+    from: { type: "string", description: "Your agent name, without @" },
+    ...extra,
+  },
+  required: ["chat", "from", ...required],
+});
+
+export const CHAT_TOOLS = [
+  {
+    name: "chat_agents",
+    description:
+      "List the agents in your Telegram chat, their status and role.",
+    inputSchema: chatArgs(),
+  },
+  {
+    name: "chat_history",
+    description:
+      "Read the latest messages of your Telegram chat (humans and agents).",
+    inputSchema: chatArgs({
+      limit: {
+        type: "number",
+        description: "Messages to read (default 20, max 40)",
+      },
+    }),
+  },
+  {
+    name: "chat_send",
+    description:
+      "Send a message to another agent of your chat. It is posted in the chat so humans see it, and the agent works on it; its answer comes back to you as a new message.",
+    inputSchema: chatArgs(
+      {
+        to: { type: "string", description: "Agent name, without @" },
+        text: { type: "string" },
+      },
+      ["to", "text"],
+    ),
+  },
+  {
+    name: "chat_post",
+    description:
+      "Post a short update for the humans of your chat (progress, a result, a heads-up). Replies to it come back to you.",
+    inputSchema: chatArgs({ text: { type: "string" } }, ["text"]),
+  },
+  {
+    name: "chat_ask_human",
+    description:
+      "Ask the humans of your chat a question when you need a decision or information. Don't wait for the answer: it arrives as a new message.",
+    inputSchema: chatArgs({ question: { type: "string" } }, ["question"]),
+  },
+];
+
+/** Adds a line to a scope's recent chat log (kept to MAX_CHAT_LOG). */
+export function appendChatLog(chat, who, text, at = Date.now()) {
+  const log = (chat.log ??= []);
+  log.push({ at, who, text: String(text ?? "").slice(0, 500) });
+  if (log.length > MAX_CHAT_LOG) log.splice(0, log.length - MAX_CHAT_LOG);
+}
+
+export function formatChatLog(log = [], limit = 20) {
+  const items = log.slice(
+    -Math.min(Math.max(1, Number(limit) || 20), MAX_CHAT_LOG),
+  );
+  if (!items.length) return "(no messages yet)";
+  return items
+    .map(
+      (item) =>
+        `[${new Date(item.at).toISOString().slice(11, 16)}] ${item.who}: ${item.text}`,
+    )
+    .join("\n");
+}
+
+/**
+ * Handles one JSON-RPC message of the MCP protocol with the given tool
+ * handlers ({ name: async (args) => text }). Returns the response, or null
+ * for notifications.
+ */
+export async function handleMcpMessage(message, handlers, tools = CHAT_TOOLS) {
+  if (!message || message.id === undefined) return null;
+  const reply = (result) => ({ jsonrpc: "2.0", id: message.id, result });
+  switch (message.method) {
+    case "initialize":
+      return reply({
+        protocolVersion: message.params?.protocolVersion ?? "2025-03-26",
+        capabilities: { tools: {} },
+        serverInfo: { name: "agent_chat", version: "1.0.0" },
+        instructions:
+          "Talk to the other agents and the humans of your Telegram chat. Pass your chat id and agent name from your first message.",
+      });
+    case "ping":
+      return reply({});
+    case "tools/list":
+      return reply({ tools });
+    case "tools/call": {
+      const name = message.params?.name;
+      const handler = handlers[name];
+      if (!handler) {
+        return {
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32602, message: `Unknown tool ${name}` },
+        };
+      }
+      try {
+        const text = await handler(message.params?.arguments ?? {});
+        return reply({ content: [{ type: "text", text: String(text) }] });
+      } catch (error) {
+        return reply({
+          content: [{ type: "text", text: error.message }],
+          isError: true,
+        });
+      }
+    }
+    default:
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32601, message: "Method not found" },
+      };
+  }
 }
