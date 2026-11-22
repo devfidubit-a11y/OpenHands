@@ -121,6 +121,21 @@ Replies to an agent's message and `@name message` always go to that agent.
 | `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
 | `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
 
+### Agents talk to agents (and humans) in the chat
+
+The chat is shared by humans and agents. Every agent learns who else is in
+the chat, and can address another agent with a line in its answer:
+
+```
+PARA @pen: alinea el logo del header de Wallet
+```
+
+The bridge posts it (`💬 @ux → @pen: …`) and delivers it to `@pen`, whose
+answer can come back the same way. Humans read everything and can answer for
+any agent, or talk to one with `@name <message>`. A loop guard limits each
+agent to 6 messages to other agents per hour; council experts debate through
+the council's rounds instead.
+
 ### Projects: one chat or topic per project
 
 To run many projects from one bot, give each its own **scope**. A scope is a
@@ -168,6 +183,7 @@ so (fixes go through feature branches and PRs).
 | `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
 | `/design <task>` | `pencil-design` | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md). |
 | `/pen <anything>` or "pen, …" | `pencil-design` | Talk to pen.dev in plain language. Photos ("foto de la pantalla wallet únicamente") and "lista" are answered by the bridge directly; changes ("arregla el header de wallet") go to the chat's design agent `@pen`, which edits live in the Pen app and the bridge then posts photos of the frames it changed. |
+| `/ux [screen]` or "pen, revisa la ux de …" | `ux-design`, `pencil-design` | The chat's `@ux` agent reviews the screens (hierarchy, heuristics, WCAG AA, spacing, type, tokens, copy, states), ranks the findings, and optimizes a copy `· UX v2` of each screen (originals untouched). The bridge posts before/after photos. |
 
 ### Expert council: parallel work, debate and decisions
 

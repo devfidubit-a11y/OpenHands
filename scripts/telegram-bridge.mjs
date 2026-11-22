@@ -18,6 +18,10 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  allowRelay,
+  buildAgentNetworkNote,
+  buildRelayPrompt,
+  parseAgentMessages,
   buildProjectContext,
   parseProjectArgs,
   scopeOf,
@@ -29,6 +33,7 @@ import {
   penExportSnippet,
   pickPenNodes,
   buildPenEditPrompt,
+  buildPenUxPrompt,
   parsePenRequest,
   parsePhotoIds,
   penMessage,
@@ -85,6 +90,7 @@ Proyectos (cada chat o tema de un grupo con temas = un proyecto aparte):
 /agents — lista los agentes de este chat
 /use <nombre|n> — elige el agente activo
 @nombre <mensaje> — habla con un agente concreto
+Los agentes también se hablan entre sí aquí: una línea "PARA @nombre: …" en su respuesta llega al otro agente y se publica en el chat (💬 @a → @b). Puedes responder tú por ellos
 (texto normal) — va al agente activo
 (responder a un mensaje de un agente) — va a ese agente
 /all <mensaje> — envía el mensaje a todos los agentes
@@ -102,6 +108,7 @@ Agentes expertos (los reparte @coordinador):
 /security [enfoque] — auditoría de seguridad (solo lectura)
 /migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
 /insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
+/ux [pantalla] — @ux revisa la UX del diseño en pen.dev, prioriza los problemas y crea una copia optimizada (antes/después). También: "pen, revisa la ux de wallet"
 /pen <lo que quieras> — habla con pen.dev en lenguaje natural: "foto de la pantalla wallet únicamente", "lista", "arregla el header de wallet" (te manda la foto al terminar). También vale escribir "pen, …" o "en pen …" sin comando
 /design <tarea> — frontend con pen.dev: diseño .pen → código (o código → diseño) vía Pencil MCP
 
@@ -144,7 +151,8 @@ const COMMANDS = [
   ["security", "Auditoría de seguridad"],
   ["migrate", "Migración por pasos"],
   ["insights", "Analizar la sesión de un agente"],
-  ["pen", "Foto de una pantalla de pen.dev"],
+  ["pen", "Hablar con pen.dev: fotos, cambios"],
+  ["ux", "Revisión y optimización UX del diseño"],
   ["design", "Frontend con diseños de pen.dev"],
   ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
   ["bots", "Plantillas de bots"],
@@ -310,14 +318,22 @@ async function createAgent(
     );
   }
   const dir = workingDir ?? workingDirFor(chat);
+  const finalName = state.uniqueName(
+    chatId,
+    name ?? `agente${chat.agents.length + 1}`,
+  );
+  const others = chat.agents.map((item) => item.name);
   const conversation = await server.createConversation({
     profileId,
-    task: `${buildProjectContext(chat.project, dir)}${task}`,
+    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others)}${task}`,
     workingDir: dir,
     chatId,
     project: chat.project ?? null,
   });
-  const agentName = state.addAgent(chatId, { id: conversation.id, name });
+  const agentName = state.addAgent(chatId, {
+    id: conversation.id,
+    name: finalName,
+  });
   const agent = state.findAgent(chatId, agentName);
   Object.assign(agent, extra);
   save();
@@ -672,6 +688,13 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
     case "foto":
     case "screen":
       return handlePen(chatId, args, messageId);
+
+    case "ux":
+      return handlePen(
+        chatId,
+        `revisa la ux ${args.trim() ? `de ${args.trim()} ` : ""}y optimízala`,
+        messageId,
+      );
 
     case "consejo":
     case "council":
@@ -1182,6 +1205,18 @@ async function handlePen(chatId, text, messageId) {
     }
     if (request.intent === "edit")
       return penEdit(chatId, doc, request.request, reply);
+    if (request.intent === "ux") {
+      const all = await penAllNodes(pen, doc);
+      const frames = pickPenNodes(all, request.query, 3);
+      if (request.query && !frames.length) {
+        return say(
+          chatId,
+          `No encontré una pantalla "${request.query}" en ${doc.file}. Pide "pen lista" para ver los nombres.`,
+          reply,
+        );
+      }
+      return penUx(chatId, doc, request.request, frames, reply);
+    }
 
     const all =
       request.intent === "list" || request.query
@@ -1224,6 +1259,36 @@ async function handlePen(chatId, text, messageId) {
   } finally {
     await pen.close();
   }
+}
+
+/** The chat's UX agent @ux reviews frames and optimizes them on copies. */
+async function penUx(chatId, doc, request, frames, reply) {
+  const chat = state.chat(chatId);
+  const prompt = buildPenUxPrompt({
+    request,
+    uri: doc.uri,
+    file: doc.file,
+    frames: frames.map(({ id, name }) => ({ id, name })),
+  });
+  let agent = chat.agents.find((item) => item.uxAgent);
+  if (agent) {
+    await server.sendMessage(agent.id, prompt);
+    markPending(agent);
+  } else {
+    agent = await createAgent(chatId, {
+      name: "ux",
+      task: prompt,
+      extra: { uxAgent: true },
+    });
+  }
+  agent.penPending = true;
+  save();
+  return say(
+    chatId,
+    `🧑‍🎨 @${agent.name} revisa ${frames.length ? frames.map((frame) => frame.name).join(", ") : "las pantallas visibles"} en ${doc.file}: hallazgos de UX priorizados y una copia "· UX v2" optimizada de cada una (los originales no se tocan). Te mando el antes y el después.`,
+    reply,
+    agent,
+  );
 }
 
 /** Sends a change request to the chat's design agent @pen (created on demand). */
@@ -1340,6 +1405,47 @@ async function runSchedules() {
   }
 }
 
+/**
+ * Delivers the "PARA @name: …" lines of a finished agent to the other agents
+ * of the same chat or topic, and posts each one so humans can follow along.
+ */
+async function relayAgentMessages(chatId, from, response) {
+  // Council experts debate through the council's own rounds.
+  if (from.expert) return;
+  const chat = state.chat(chatId);
+  for (const { to, text } of parseAgentMessages(response)) {
+    if (to === from.name) continue;
+    const target = chat.agents.find((item) => item.name === to);
+    if (!target) {
+      await say(
+        chatId,
+        `💬 @${from.name} → @${to}: no hay ningún agente @${to} aquí. Respóndele tú o créalo con /new @${to} <tarea>.\n${text}`,
+        {},
+        from,
+      );
+      continue;
+    }
+    if (!allowRelay(from)) {
+      await say(
+        chatId,
+        `⏸️ @${from.name} ya envió muchos mensajes a otros agentes esta hora. Respóndele tú para seguir.`,
+        {},
+        from,
+      );
+      return;
+    }
+    await say(
+      chatId,
+      `💬 @${from.name} → @${target.name}: ${text}`,
+      {},
+      target,
+    );
+    await server.sendMessage(target.id, buildRelayPrompt(from.name, text));
+    markPending(target);
+  }
+  save();
+}
+
 /** Polls tracked agents and posts results, errors and confirmation requests. */
 async function watchAgents() {
   for (const [chatId, chat] of Object.entries(state.chats)) {
@@ -1369,6 +1475,7 @@ async function watchAgents() {
           );
           if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
           if (agent.penPending) await penAgentDone(chatId, agent, response);
+          await relayAgentMessages(chatId, agent, response);
         } else if (event === "problem") {
           const reason =
             next === "error"

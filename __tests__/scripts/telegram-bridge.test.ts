@@ -16,6 +16,11 @@ import {
   McpHttpClient,
   TelegramClient,
   buildPenEditPrompt,
+  buildPenUxPrompt,
+  allowRelay,
+  buildAgentNetworkNote,
+  buildRelayPrompt,
+  parseAgentMessages,
   parsePenRequest,
   parsePhotoIds,
   penMessage,
@@ -1115,5 +1120,65 @@ describe("talking to pen.dev in plain language", () => {
       "yZhTW",
     ]);
     expect(parsePhotoIds("sin fotos")).toEqual([]);
+  });
+});
+
+describe("UX agent", () => {
+  it("review and optimize requests go to @ux with the screen", () => {
+    expect(
+      parsePenRequest("revisa la ux de la pantalla wallet y optimízala"),
+    ).toEqual({
+      intent: "ux",
+      query: "wallet",
+      request: "revisa la ux de la pantalla wallet y optimízala",
+    });
+    expect(parsePenRequest("revisa el diseño y optimízalo")).toMatchObject({
+      intent: "ux",
+      query: "",
+    });
+    expect(parsePenRequest("arregla el header de wallet").intent).toBe("edit");
+  });
+
+  it("optimizes on copies and returns before/after ids", () => {
+    const prompt = buildPenUxPrompt({
+      request: "revisa wallet",
+      uri: "file:///a.pen",
+      file: "a.pen",
+      frames: [{ id: "I7gNe", name: "Dracma · Wallet" }],
+    });
+    expect(prompt).toContain("Dracma · Wallet (I7gNe)");
+    expect(prompt).toContain("· UX v2");
+    expect(prompt).toMatch(/WCAG AA/);
+    expect(prompt).toContain("FOTO:");
+  });
+});
+
+describe("agents talking to agents", () => {
+  it("reads PARA @name lines", () => {
+    expect(
+      parseAgentMessages(
+        "Listo.\nPARA @pen: alinea el logo del header\n**To @qa —** prueba el login\n@front: tarea de plan",
+      ),
+    ).toEqual([
+      { to: "pen", text: "alinea el logo del header" },
+      { to: "qa", text: "prueba el login" },
+    ]);
+    expect(parseAgentMessages("sin mensajes")).toEqual([]);
+  });
+
+  it("tells each agent who else is in the chat and how to reach them", () => {
+    const note = buildAgentNetworkNote("ux", ["pen", "coordinador"]);
+    expect(note).toContain("You are @ux");
+    expect(note).toContain("@pen, @coordinador");
+    expect(note).toContain("PARA @name: message");
+    expect(buildRelayPrompt("ux", "hola")).toContain('"PARA @ux: your answer"');
+  });
+
+  it("limits relays per agent per hour", () => {
+    const agent: { relays?: number[] } = {};
+    for (let i = 0; i < 6; i += 1)
+      expect(allowRelay(agent, 1000 + i)).toBe(true);
+    expect(allowRelay(agent, 2000)).toBe(false);
+    expect(allowRelay(agent, 1000 + 3_600_001)).toBe(true);
   });
 });

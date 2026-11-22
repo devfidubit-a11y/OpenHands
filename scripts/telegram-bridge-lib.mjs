@@ -1829,11 +1829,17 @@ const PEN_FILLER = new Set(
     "foto fotos captura capturas screenshot screenshots screen pantallazo imagen " +
     "imagenes pantalla pantallas frame frames vista vistas diseno disenos " +
     "unicamente solo solamente sola nada mas only just of the please take send " +
-    "show give me picture pic pen pencil pen.dev archivo file actual abierta abierto"
+    "show give me picture pic pen pencil pen.dev archivo file actual abierta abierto " +
+    "revisa revisar revision audita auditar auditoria optimiza optimizar optimizala " +
+    "optimizalo mejora mejorar mejorala mejoralo critica criticar analiza analizar " +
+    "ux ui usabilidad experiencia usuario review audit optimize optimise improve " +
+    "it this esta este"
   ).split(" "),
 );
 const PEN_PHOTO_RE =
   /\b(foto|fotos|captura|capturas|screenshot|screen|pantallazo|imagen|muestra(me)?|ensena(me)?|picture|pic|show)\b/;
+const PEN_UX_RE =
+  /\b(ux|usabilidad|revisa(r|la|lo)?|revision|audita(r)?|auditoria|optimiza(r|la|lo)?|mejora(r|la|lo)?|critica(r)?|analiza(r)?|review|audit|optimi[sz]e|improve)\b/;
 const PEN_ONLY_RE = /\b(unicamente|solo|solamente|nada mas|only|just)\b/;
 const PEN_LIST_RE = /^(lista|list|ls|pantallas|frames|indice|index)$/;
 
@@ -1854,6 +1860,11 @@ export function parsePenRequest(raw) {
     text !== text.toUpperCase()
   )
     return { intent: "photo", query: text, only: true };
+  // "revisa la ux de wallet y optimízala": the UX agent reviews and improves.
+  if (PEN_UX_RE.test(folded)) {
+    const query = words.filter((word) => !PEN_FILLER.has(word)).join(" ");
+    return { intent: "ux", query, request: text };
+  }
   const photo = PEN_PHOTO_RE.test(folded);
   // A bare name ("wallet", "dashboard mega menu") is a photo request too.
   const bare =
@@ -1903,6 +1914,53 @@ export function buildPenEditPrompt({ request, uri = "", file = "" }) {
     `Request: ${request}`,
   ]
     .filter((line, index, all) => line !== "" || all[index - 1] !== "")
+    .join("\n");
+}
+
+/**
+ * First message for the chat's UX agent: review the frames, rank the
+ * issues, and optimize them on copies (the originals stay untouched).
+ */
+export function buildPenUxPrompt({
+  request,
+  uri = "",
+  file = "",
+  frames = [],
+}) {
+  return [
+    "You are @ux, a senior UX/UI designer. You review and optimize designs in",
+    "the user's pen.dev (Pencil) app through the pencil MCP tools. Use the",
+    "skills ux-design, ui-design, ux-ui-storytelling, impeccable and pencil-design.",
+    uri
+      ? `Open document: ${file} (${uri}). Use this uri in every tool call.`
+      : "",
+    frames.length
+      ? `Frames: ${frames.map((frame) => `${frame.name} (${frame.id})`).join(", ")}.`
+      : "Frames: the ones the user names, or the ones visible on the canvas (get_app_state).",
+    "",
+    "1. Review each frame: look at it with TakeScreenshot and read its",
+    "   structure with Get. Check: visual hierarchy and the main action, Nielsen",
+    "   heuristics, WCAG AA contrast and touch targets, spacing rhythm and",
+    "   alignment, typography scale, consistency with the document's variables",
+    "   and components, UX copy (Spanish, clear, short), empty/loading/error",
+    "   states, and how the layout holds on mobile.",
+    "2. Rank the findings: ID (U1, U2…), severity (alta/media/baja), frame,",
+    "   the problem, and the fix. Skip personal taste; every finding says why",
+    "   it hurts the user.",
+    "3. Optimize without touching the originals: Copy each frame next to it",
+    "   (FindEmptySpace to the right of the original), name the copy",
+    '   "<original name> · UX v2", and apply the high and medium fixes there,',
+    "   reusing the document's components and variables. Verify with",
+    "   TakeScreenshot. Don't call save unless the user asks.",
+    "",
+    "Answer in Spanish: the findings table, what you changed in each copy, and",
+    "what you left for the user to decide. End with one line pairing each",
+    "original with its copy (before, after), like:",
+    "FOTO: I7gNe, Xk9f2",
+    "",
+    `Request: ${request}`,
+  ]
+    .filter(Boolean)
     .join("\n");
 }
 
@@ -2034,4 +2092,72 @@ export function buildProjectContext(project, workingDir = "") {
     "Only work inside this project's folder.",
     "",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Agent-to-agent talk: the Telegram chat is shared by humans and agents. An
+// agent addresses another one with a "PARA @name: message" line; the bridge
+// posts it in the chat and delivers it, so humans see and can join in.
+// ---------------------------------------------------------------------------
+
+const AGENT_MESSAGE_RE =
+  /^\s*(?:[-*•]\s*)?(?:para|to|a|msg|mensaje(?:\s+para)?)\s+@([a-z0-9][a-z0-9_-]{0,31})\s*(?::|—|–|-)\s*(\S[\s\S]*)$/i;
+
+/** Messages an agent addressed to other agents: [{ to, text }]. */
+export function parseAgentMessages(text, max = 3) {
+  const result = [];
+  for (const line of String(text ?? "")
+    .replace(/\*\*|`/g, "")
+    .split(/\r?\n/)) {
+    const match = AGENT_MESSAGE_RE.exec(line);
+    if (match)
+      result.push({ to: match[1].toLowerCase(), text: match[2].trim() });
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
+/** How agents talk to each other; added to every agent's first message. */
+export function buildAgentNetworkNote(name, others = []) {
+  return [
+    `You are @${name} in a Telegram chat shared by humans and AI agents.`,
+    others.length
+      ? `Other agents here: ${others.map((other) => `@${other}`).join(", ")}.`
+      : "",
+    "To ask or tell another agent something, end your answer with a line",
+    '"PARA @name: message" (one line per agent, at most 3). The bridge posts it',
+    "in the chat and delivers it; their reply comes back to you the same way.",
+    "Humans read everything and may answer for them. Only do it when you need",
+    "that agent; never use it for thanks or acknowledgements.",
+    "",
+  ]
+    .filter((line, index) => line !== "" || index > 0)
+    .join("\n");
+}
+
+/** The message a relayed agent receives. */
+export function buildRelayPrompt(from, text) {
+  return [
+    `Message from @${from} (another agent in this chat):`,
+    text,
+    "",
+    `Do what it asks if it fits your work. To answer @${from}, end with a line`,
+    `"PARA @${from}: your answer". Don't answer if there is nothing to add.`,
+  ].join("\n");
+}
+
+export const MAX_RELAYS_PER_HOUR = 6;
+
+/**
+ * Whether an agent may send another relay now (loop guard: at most
+ * MAX_RELAYS_PER_HOUR per agent per hour). Mutates the agent's history.
+ */
+export function allowRelay(agent, now = Date.now(), max = MAX_RELAYS_PER_HOUR) {
+  const recent = (agent.relays ?? []).filter((time) => now - time < 3_600_000);
+  if (recent.length >= max) {
+    agent.relays = recent;
+    return false;
+  }
+  agent.relays = [...recent, now];
+  return true;
 }
