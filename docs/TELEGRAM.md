@@ -121,6 +121,34 @@ Replies to an agent's message and `@name message` always go to that agent.
 | `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
 | `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
 
+### Projects: one chat or topic per project
+
+To run many projects from one bot, give each its own **scope**. A scope is a
+private chat, a group, or one **topic** of a group with topics turned on.
+Each scope has its own coordinator, agents, folder, project, bots,
+schedules and councils, so work on one project never lands in another.
+
+- `/project new <name> [folder]` registers a project (folder defaults to
+  `/documents/<name>` and must exist). In a group with topics, the bot opens
+  a topic `📁 <name>` bound to it (give the bot the **Manage topics** admin
+  right); elsewhere it binds the current chat.
+- `/project use <name>` binds the current chat or topic. Switching project
+  retires that scope's coordinator, so the next request starts a fresh one in
+  the new folder.
+- `/project` shows the current project and the list; `/project rm <name>`
+  removes it from the list (files stay).
+
+Every conversation is tagged `project=<name>` in Agent Canvas, agents are told
+to store and search memory as `[<name>] …`, and the memory watcher tags its
+summaries with the project, so lessons from one project don't leak into
+another.
+
+Turning on topics converts a group into a supergroup with a new id. The
+bridge follows the migration: the new id stays authorized and the group's
+agents, projects and schedules move with it. Still, update
+`TELEGRAM_ALLOWED_CHAT_IDS` with the new id (`/whoami`) so it survives a reset
+of the bridge state.
+
 ### Expert commands
 
 Each one sends @coordinador a request that names the right skill, in the

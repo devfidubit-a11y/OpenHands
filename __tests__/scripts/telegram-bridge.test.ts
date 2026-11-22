@@ -7,6 +7,12 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  buildProjectContext,
+  parseProjectArgs,
+  projectSlug,
+  scopeKey,
+  scopeOf,
+  splitScope,
   McpHttpClient,
   TelegramClient,
   parsePenAppState,
@@ -925,5 +931,102 @@ describe("pen.dev screenshots", () => {
     const telegram = new TelegramClient({ token: "T", fetchImpl });
     await telegram.sendPhoto(42, Buffer.from("png"), { caption: "Wallet" });
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+});
+
+describe("scopes and projects", () => {
+  it("a forum topic is its own scope; other messages use the chat", () => {
+    expect(scopeKey(-100, 7)).toBe("-100:7");
+    expect(scopeKey(-100)).toBe("-100");
+    expect(splitScope("-100:7")).toEqual({ chatId: "-100", threadId: 7 });
+    expect(splitScope("42")).toEqual({ chatId: "42", threadId: null });
+    expect(
+      scopeOf({
+        chat: { id: -100, is_forum: true },
+        is_topic_message: true,
+        message_thread_id: 7,
+      }),
+    ).toBe("-100:7");
+    // A reply thread in a normal group is not a topic.
+    expect(scopeOf({ chat: { id: -5 }, message_thread_id: 3 })).toBe("-5");
+  });
+
+  it("authorizes topics by their chat id", () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: "t",
+      TELEGRAM_ALLOWED_CHAT_IDS: "-100",
+    });
+    expect(isAuthorized(config, "-100:7", 1)).toBe(true);
+    expect(isAuthorized(config, "-200:7", 1)).toBe(false);
+  });
+
+  it("moves a migrated group's scopes to the new id", () => {
+    const state = new BridgeState({
+      chats: {
+        "-5": { agents: [{ id: "a" }] },
+        "-5:3": { agents: [] },
+        "9": { agents: [] },
+      },
+    });
+    expect(state.migrateChat("-5", "-1005")).toBe(2);
+    expect(Object.keys(state.chats).sort()).toEqual(["-1005", "-1005:3", "9"]);
+    expect(state.chats["-1005"].agents[0].id).toBe("a");
+    expect(state.toJSON().migrations).toEqual({ "-5": "-1005" });
+  });
+
+  it("parses /project", () => {
+    expect(parseProjectArgs("")).toEqual({ action: "list" });
+    expect(parseProjectArgs("new Dracma")).toEqual({
+      action: "new",
+      name: "dracma",
+      dir: "/documents/dracma",
+    });
+    expect(parseProjectArgs("new dracma-web /documents/dracma-web/")).toEqual({
+      action: "new",
+      name: "dracma-web",
+      dir: "/documents/dracma-web",
+    });
+    expect(parseProjectArgs("usar dracma-web")).toEqual({
+      action: "use",
+      name: "dracma-web",
+    });
+    expect(parseProjectArgs("new x relative/dir").usage).toMatch(/absoluta/);
+    expect(parseProjectArgs("bogus").usage).toMatch(/Uso:/);
+    expect(projectSlug("Dracma Web!")).toBe("dracma-web");
+  });
+
+  it("gives agents a per-project memory namespace", () => {
+    expect(buildProjectContext(null)).toBe("");
+    const context = buildProjectContext("dracma-web", "/documents/dracma-web");
+    expect(context).toContain('"[dracma-web]"');
+    expect(context).toContain("/documents/dracma-web");
+  });
+
+  it("tags conversations with the project and sends into topics", async () => {
+    const bodies: any[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true, result: { id: "c1" } }));
+    });
+    const server = new AgentServerClient({ baseUrl: "http://x", fetchImpl });
+    await server.createConversation({
+      profileId: "p",
+      task: "t",
+      workingDir: "/d",
+      chatId: "-100:7",
+      project: "dracma-web",
+    });
+    expect(bodies[0].tags).toEqual({
+      source: "telegram",
+      telegramchat: "-100:7",
+      project: "dracma-web",
+    });
+    const telegram = new TelegramClient({ token: "T", fetchImpl });
+    await telegram.sendText("-100:7", "hola");
+    expect(bodies[1]).toMatchObject({
+      chat_id: "-100",
+      message_thread_id: 7,
+      text: "hola",
+    });
   });
 });

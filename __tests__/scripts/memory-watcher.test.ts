@@ -184,3 +184,22 @@ describe("keepGraphifyLocal", () => {
     expect(read(".git/info/attributes")).toContain("merge=graphify");
   });
 });
+
+describe("conversation notes per project", () => {
+  it("prefixes and tags the note with the conversation's project", () => {
+    const note = buildConversationNote({
+      conversation: {
+        id: "c1",
+        execution_status: "finished",
+        updated_at: "now",
+        tags: { project: "dracma-web" },
+      },
+      firstUserText: "fix login",
+      finalResponse: "done",
+    });
+    expect(
+      note.information.startsWith("[dracma-web] Conversation summary"),
+    ).toBe(true);
+    expect(note.metadata.project).toBe("dracma-web");
+  });
+});

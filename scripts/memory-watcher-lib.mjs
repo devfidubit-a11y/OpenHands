@@ -64,8 +64,9 @@ export function buildConversationNote({
   const tags = tagsOf(conversation);
   const workingDir = conversation?.workspace?.working_dir ?? "";
   const title = truncate(conversation?.title || firstUserText, 120);
+  const project = tags.project ?? "";
   const lines = [
-    `Conversation summary: ${title || conversation.id}`,
+    `${project ? `[${project}] ` : ""}Conversation summary: ${title || conversation.id}`,
     firstUserText ? `Task: ${truncate(firstUserText, 600)}` : "",
     `Outcome (${conversation.execution_status}): ${truncate(finalResponse, 2000)}`,
     workingDir ? `Working directory: ${workingDir}` : "",
@@ -78,6 +79,7 @@ export function buildConversationNote({
       conversation_id: conversation.id,
       ...(tags.acpserver ? { agent: tags.acpserver } : {}),
       ...(workingDir ? { working_dir: workingDir } : {}),
+      ...(project ? { project } : {}),
       updated_at: conversation.updated_at,
     },
   };

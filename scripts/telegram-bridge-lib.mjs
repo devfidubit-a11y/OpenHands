@@ -80,9 +80,32 @@ export function loadConfig(env = process.env) {
   };
 }
 
+/**
+ * A scope is one conversation space of the bridge: a chat, or one topic of a
+ * forum group ("<chatId>:<threadId>"). Each scope has its own agents,
+ * coordinator, folder, project, schedules and councils.
+ */
+export function scopeKey(chatId, threadId = null) {
+  return threadId ? `${chatId}:${threadId}` : String(chatId);
+}
+
+export function splitScope(key) {
+  const [chatId, threadId] = String(key).split(":");
+  return { chatId, threadId: threadId ? Number(threadId) : null };
+}
+
+/** The scope of an incoming message (its topic in a forum group). */
+export function scopeOf(message) {
+  const thread =
+    message?.chat?.is_forum && message.is_topic_message
+      ? message.message_thread_id
+      : null;
+  return scopeKey(message?.chat?.id, thread);
+}
+
 /** Whether a Telegram update author may drive agents. */
 export function isAuthorized(config, chatId, userId) {
-  if (!config.allowedChats.has(String(chatId))) return false;
+  if (!config.allowedChats.has(splitScope(chatId).chatId)) return false;
   if (config.allowedUsers.size === 0) return true;
   return userId != null && config.allowedUsers.has(String(userId));
 }
@@ -166,6 +189,30 @@ export class BridgeState {
     this.offset = data.offset ?? 0;
     this.chats = data.chats ?? {};
     this.messageMap = data.messageMap ?? {};
+    // Named projects: { name: { dir, createdAt } }, shared by all scopes.
+    this.projects = data.projects ?? {};
+    // Group ids Telegram migrated (group → supergroup): { oldId: newId }.
+    this.migrations = data.migrations ?? {};
+  }
+
+  /**
+   * A group became a supergroup (needed for topics) and got a new id: move
+   * its scopes and remember the new id. Returns the number of scopes moved.
+   */
+  migrateChat(oldId, newId) {
+    const from = String(oldId);
+    const to = String(newId);
+    let moved = 0;
+    for (const key of Object.keys(this.chats)) {
+      const { chatId, threadId } = splitScope(key);
+      if (chatId !== from) continue;
+      const target = scopeKey(to, threadId);
+      this.chats[target] ??= this.chats[key];
+      delete this.chats[key];
+      moved += 1;
+    }
+    this.migrations[from] = to;
+    return moved;
   }
 
   /**
@@ -209,6 +256,8 @@ export class BridgeState {
       offset: this.offset,
       chats: this.chats,
       messageMap: this.messageMap,
+      projects: this.projects,
+      migrations: this.migrations,
     };
   }
 
@@ -630,7 +679,7 @@ export class AgentServerClient {
     return match ? (match.id ?? match.name) : null;
   }
 
-  createConversation({ profileId, task, workingDir, chatId }) {
+  createConversation({ profileId, task, workingDir, chatId, project = null }) {
     return this.request("POST", "/api/conversations", {
       agent_profile_id: profileId,
       workspace: { kind: "LocalWorkspace", working_dir: workingDir },
@@ -639,7 +688,11 @@ export class AgentServerClient {
         content: [{ type: "text", text: task }],
         run: true,
       },
-      tags: { source: "telegram", telegramchat: String(chatId) },
+      tags: {
+        source: "telegram",
+        telegramchat: String(chatId),
+        ...(project ? { project } : {}),
+      },
     });
   }
 
@@ -748,7 +801,8 @@ export class TelegramClient {
   }
 
   /** Sends text (chunked), returning the sent messages. */
-  async sendText(chatId, text, extra = {}) {
+  async sendText(scope, text, extra = {}) {
+    const { chatId, threadId } = splitScope(scope);
     const sent = [];
     const chunks = chunkText(text);
     for (const [index, chunk] of chunks.entries()) {
@@ -756,6 +810,7 @@ export class TelegramClient {
       sent.push(
         await this.call("sendMessage", {
           chat_id: chatId,
+          ...(threadId ? { message_thread_id: threadId } : {}),
           text: chunk,
           link_preview_options: { is_disabled: true },
           ...(index === 0 && extra.replyTo
@@ -775,13 +830,15 @@ export class TelegramClient {
    * recompression, for large or very tall designs).
    */
   async sendPhoto(
-    chatId,
+    scope,
     data,
     { caption = "", filename = "image.png", asDocument = false } = {},
   ) {
     const method = asDocument ? "sendDocument" : "sendPhoto";
+    const { chatId, threadId } = splitScope(scope);
     const form = new FormData();
     form.append("chat_id", String(chatId));
+    if (threadId) form.append("message_thread_id", String(threadId));
     if (caption) form.append("caption", caption.slice(0, 1024));
     form.append(
       asDocument ? "document" : "photo",
@@ -796,6 +853,15 @@ export class TelegramClient {
     if (!result.ok)
       throw new Error(`Telegram ${method} failed: ${result.description}`);
     return result.result;
+  }
+
+  /** Creates a topic in a forum group; returns its message_thread_id. */
+  async createForumTopic(chatId, name) {
+    const topic = await this.call("createForumTopic", {
+      chat_id: chatId,
+      name: String(name).slice(0, 128),
+    });
+    return topic.message_thread_id;
   }
 
   answerCallback(id, text) {
@@ -1766,4 +1832,79 @@ export function toPenHostPath(path, env = process.env) {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Projects: a name bound to a folder; each Telegram scope (chat or topic)
+// works on one project, with its own agents and memory namespace.
+// ---------------------------------------------------------------------------
+
+/** "Dracma Web!" → "dracma-web" (letters, digits, - and _; at most 40). */
+export function projectSlug(name) {
+  return String(name ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+}
+
+/**
+ * `/project` arguments → { action, name, dir } | { usage }.
+ * Actions: list (no args), new <name> [dir], use <name>, rm <name>.
+ */
+export function parseProjectArgs(raw) {
+  const usage = [
+    "Uso:",
+    "/project — proyecto de este chat o tema y la lista de proyectos",
+    "/project new <nombre> [carpeta] — crea el proyecto (carpeta por defecto: /documents/<nombre>); en un grupo con temas abre un tema para él",
+    "/project use <nombre> — este chat o tema trabaja en ese proyecto",
+    "/project rm <nombre> — lo quita de la lista (no borra archivos)",
+  ].join("\n");
+  const [verb = "", name = "", ...rest] = String(raw ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const action = {
+    "": "list",
+    list: "list",
+    ls: "list",
+    lista: "list",
+    new: "new",
+    add: "new",
+    crear: "new",
+    nuevo: "new",
+    use: "use",
+    usar: "use",
+    rm: "rm",
+    del: "rm",
+    borrar: "rm",
+  }[verb.toLowerCase()];
+  if (!action) return { usage };
+  if (action === "list") return { action };
+  const slug = projectSlug(name);
+  if (!slug) return { usage };
+  if (action !== "new") return { action, name: slug };
+  const dir = rest.length
+    ? parseWorkingDir(rest.join(" "))
+    : `/documents/${slug}`;
+  if (!dir)
+    return { usage: `La carpeta debe ser una ruta absoluta.\n\n${usage}` };
+  return { action, name: slug, dir };
+}
+
+/**
+ * First lines of every agent's first message in a project: where it works
+ * and how to keep the shared memory separated per project.
+ */
+export function buildProjectContext(project, workingDir = "") {
+  if (!project) return "";
+  return [
+    `Project: ${project}${workingDir ? ` (folder ${workingDir})` : ""}.`,
+    `Shared memory is used by many projects: start every qdrant-store entry with "[${project}]",`,
+    `include "${project}" in your qdrant-find queries, and ignore memories tagged with another project.`,
+    "Only work inside this project's folder.",
+    "",
+  ].join("\n");
 }

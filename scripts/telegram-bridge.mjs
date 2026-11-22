@@ -11,12 +11,17 @@
  * See docs/TELEGRAM.md for setup and the full command list.
  */
 
+import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 
 import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  buildProjectContext,
+  parseProjectArgs,
+  scopeOf,
+  splitScope,
   McpHttpClient,
   PEN_LIST_SNIPPET,
   parsePenAppState,
@@ -71,6 +76,8 @@ terminar @coordinador integra los resultados y te da el resumen.
 /team [@nombre] <tarea> — un agente líder planifica y reparte subtareas
 /dispatch — reparte tareas a mano, una por línea: @nombre tarea
 /dir [ruta] — carpeta de trabajo de los próximos agentes (p. ej. /documents/mi-proyecto)
+Proyectos (cada chat o tema de un grupo con temas = un proyecto aparte):
+/project — proyecto actual y lista · /project new <nombre> [carpeta] · /project use <nombre> · /project rm <nombre>
 /agents — lista los agentes de este chat
 /use <nombre|n> — elige el agente activo
 @nombre <mensaje> — habla con un agente concreto
@@ -117,6 +124,7 @@ const COMMANDS = [
   ["team", "Líder que planifica y reparte subtareas"],
   ["dispatch", "Repartir tareas: @nombre tarea por línea"],
   ["dir", "Carpeta de trabajo de los próximos agentes"],
+  ["project", "Proyectos: un chat o tema por proyecto"],
   ["agents", "Listar agentes del chat"],
   ["use", "Elegir agente activo"],
   ["all", "Mensaje a todos los agentes"],
@@ -297,11 +305,13 @@ async function createAgent(
       "No hay perfil de agente. Crea uno en Agent Canvas (Ajustes → Agente) o usa /profiles.",
     );
   }
+  const dir = workingDir ?? workingDirFor(chat);
   const conversation = await server.createConversation({
     profileId,
-    task,
-    workingDir: workingDir ?? workingDirFor(chat),
+    task: `${buildProjectContext(chat.project, dir)}${task}`,
+    workingDir: dir,
     chatId,
+    project: chat.project ?? null,
   });
   const agentName = state.addAgent(chatId, { id: conversation.id, name });
   const agent = state.findAgent(chatId, agentName);
@@ -355,7 +365,7 @@ async function dispatch(chatId, assignments, lead = null) {
   return lines;
 }
 
-async function handleCommand(chatId, command, args, messageId) {
+async function handleCommand(chatId, command, args, messageId, message = null) {
   const chat = state.chat(chatId);
   switch (command) {
     case "start":
@@ -648,6 +658,12 @@ async function handleCommand(chatId, command, args, messageId) {
       return addSchedule(chatId, args);
     }
 
+    case "project":
+    case "projects":
+    case "proyecto":
+    case "proyectos":
+      return projectCommand(chatId, args, message);
+
     case "pen":
     case "foto":
     case "screen":
@@ -684,14 +700,29 @@ async function handleCommand(chatId, command, args, messageId) {
   }
 }
 
+/**
+ * A group became a supergroup (turning on topics does this) and got a new
+ * id: keep it authorized and move its agents, projects and schedules.
+ */
+function handleMigration(message) {
+  const oldId = String(message.chat.id);
+  const newId = String(message.migrate_to_chat_id);
+  if (!config.allowedChats.has(oldId)) return;
+  config.allowedChats.add(newId);
+  const moved = state.migrateChat(oldId, newId);
+  save();
+  log(`chat ${oldId} migrated to ${newId}; moved ${moved} scope(s)`);
+}
+
 async function handleMessage(message) {
-  const chatId = message.chat.id;
+  const chatId = scopeOf(message);
   const parsed = parseMessage(message.text);
 
   if (parsed.kind === "command" && parsed.command === "whoami") {
+    const { chatId: id, threadId } = splitScope(chatId);
     return say(
       chatId,
-      `chat id: ${chatId}\nuser id: ${message.from?.id ?? "?"}`,
+      `chat id: ${id}${threadId ? `\ntema (thread) id: ${threadId}` : ""}\nuser id: ${message.from?.id ?? "?"}${message.chat.is_forum ? "\nGrupo con temas: cada tema puede ser un proyecto (/project)." : ""}`,
     );
   }
   if (!isAuthorized(config, chatId, message.from?.id)) {
@@ -705,6 +736,7 @@ async function handleMessage(message) {
       parsed.command,
       parsed.args,
       message.message_id,
+      message,
     );
   }
 
@@ -737,7 +769,7 @@ async function handleMessage(message) {
 }
 
 async function handleCallback(query) {
-  const chatId = query.message?.chat.id;
+  const chatId = query.message ? scopeOf(query.message) : null;
   if (chatId == null || !isAuthorized(config, chatId, query.from?.id)) {
     return telegram.answerCallback(query.id, "No autorizado");
   }
@@ -921,6 +953,127 @@ async function advanceCouncil(chatId, council) {
     `🗳️ Votos del consejo:\n${formatTally(tally)}\n\n⚖️ @${moderator.name} está decidiendo. Te propondrá el plan para que lo apruebes.`,
     {},
     moderator,
+  );
+}
+
+/**
+ * Binds a scope (chat or topic) to a project. Its coordinator belongs to the
+ * previous project, so it is retired (kept as a plain agent) and the next
+ * request starts a new one in the new folder.
+ */
+function bindProject(scope, name) {
+  const chat = state.chat(scope);
+  if (chat.project !== name) {
+    for (const agent of chat.agents) {
+      if (agent.coordinator) agent.coordinator = false;
+    }
+  }
+  chat.project = name;
+  chat.workingDir = state.projects[name].dir;
+  save();
+}
+
+function projectScopes(name) {
+  return Object.entries(state.chats).filter(
+    ([, chat]) => chat.project === name,
+  );
+}
+
+async function projectCommand(scope, args, message) {
+  const chat = state.chat(scope);
+  const parsed = parseProjectArgs(args);
+  if (parsed.usage) return say(scope, parsed.usage);
+  const { action, name } = parsed;
+
+  if (action === "list") {
+    const entries = Object.entries(state.projects);
+    const lines = entries.map(([key, project]) => {
+      const scopes = projectScopes(key).length;
+      return `${key === chat.project ? "👉" : "•"} ${key} — ${project.dir}${scopes ? ` (${scopes} chat${scopes === 1 ? "" : "s"}/tema${scopes === 1 ? "" : "s"})` : ""}`;
+    });
+    return say(
+      scope,
+      [
+        chat.project
+          ? `Este chat trabaja en el proyecto ${chat.project} (${workingDirFor(chat)}).`
+          : `Este chat no tiene proyecto; carpeta: ${workingDirFor(chat)}.`,
+        "",
+        entries.length
+          ? `Proyectos:\n${lines.join("\n")}`
+          : "Aún no hay proyectos.",
+        "",
+        "/project new <nombre> [carpeta] · /project use <nombre>",
+        "Tip: en un grupo con temas, cada tema es un proyecto separado con sus propios agentes.",
+      ].join("\n"),
+    );
+  }
+
+  if (action === "rm") {
+    if (!state.projects[name])
+      return say(scope, `No existe el proyecto ${name}.`);
+    delete state.projects[name];
+    for (const [, bound] of projectScopes(name)) delete bound.project;
+    save();
+    return say(
+      scope,
+      `🗑️ Proyecto ${name} quitado de la lista (los archivos siguen ahí).`,
+    );
+  }
+
+  if (action === "use") {
+    if (!state.projects[name])
+      return say(
+        scope,
+        `No existe el proyecto ${name}. Créalo con /project new ${name} [carpeta].`,
+      );
+    bindProject(scope, name);
+    return say(
+      scope,
+      `📁 Este chat ahora trabaja en ${name} (${state.projects[name].dir}). Los agentes nuevos y su memoria quedan separados por proyecto.`,
+    );
+  }
+
+  // new
+  const existing = state.projects[name];
+  if (existing && existing.dir !== parsed.dir) {
+    return say(
+      scope,
+      `El proyecto ${name} ya existe en ${existing.dir}. Usa /project use ${name}.`,
+    );
+  }
+  if (!existsSync(parsed.dir)) {
+    return say(
+      scope,
+      `La carpeta ${parsed.dir} no existe en el contenedor. Usa una carpeta dentro de /documents o /projects, p. ej. /project new ${name} /documents/${name}.`,
+    );
+  }
+  state.projects[name] ??= { dir: parsed.dir, createdAt: Date.now() };
+  save();
+
+  // In a forum group, open a topic for the project (the bot needs the
+  // "Manage topics" admin right); otherwise bind this chat.
+  const { chatId, threadId } = splitScope(scope);
+  if (message?.chat?.is_forum && !threadId) {
+    try {
+      const topic = await telegram.createForumTopic(chatId, `📁 ${name}`);
+      const topicScope = `${chatId}:${topic}`;
+      bindProject(topicScope, name);
+      await say(
+        topicScope,
+        `📁 Proyecto ${name} → ${parsed.dir}\nTodo lo que escribas en este tema va a sus propios agentes, coordinador, bots y memoria.`,
+      );
+      return say(scope, `✅ Proyecto ${name} creado con su propio tema.`);
+    } catch (error) {
+      await say(
+        scope,
+        `No pude crear el tema (${error.message}). Dale al bot el permiso de administrador "Gestionar temas", o crea el tema a mano y escribe allí /project use ${name}.`,
+      );
+    }
+  }
+  bindProject(scope, name);
+  return say(
+    scope,
+    `✅ Proyecto ${name} → ${parsed.dir}. Este chat trabaja ahora en él.`,
   );
 }
 
@@ -1269,13 +1422,15 @@ async function pollTelegram() {
         state.offset = update.update_id + 1;
         save();
         try {
-          if (update.message?.text) await handleMessage(update.message);
+          if (update.message?.migrate_to_chat_id)
+            handleMigration(update.message);
+          else if (update.message?.text) await handleMessage(update.message);
           else if (update.callback_query)
             await handleCallback(update.callback_query);
         } catch (error) {
           log("update failed", error.message);
-          const chatId =
-            update.message?.chat.id ?? update.callback_query?.message?.chat.id;
+          const source = update.message ?? update.callback_query?.message;
+          const chatId = source ? scopeOf(source) : null;
           if (
             chatId != null &&
             isAuthorized(
@@ -1308,6 +1463,9 @@ async function main() {
     log(
       `Bot changed to @${me.username}: reset update offset and reply map; agents kept.`,
     );
+  }
+  for (const [oldId, newId] of Object.entries(state.migrations)) {
+    if (config.allowedChats.has(oldId)) config.allowedChats.add(newId);
   }
   save();
   log(`Connected as @${me.username}`);
