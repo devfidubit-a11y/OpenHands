@@ -15,6 +15,10 @@ import {
   splitScope,
   McpHttpClient,
   TelegramClient,
+  buildPenEditPrompt,
+  parsePenRequest,
+  parsePhotoIds,
+  penMessage,
   parsePenAppState,
   parsePenNodeList,
   penExportSnippet,
@@ -1028,5 +1032,88 @@ describe("scopes and projects", () => {
       message_thread_id: 7,
       text: "hola",
     });
+  });
+});
+
+describe("talking to pen.dev in plain language", () => {
+  const nodes = [
+    {
+      id: "I98pva",
+      type: "frame",
+      name: "Dracma · Dashboard · Mega menú cerrado",
+      visible: true,
+    },
+    { id: "I7gNe", type: "frame", name: "Dracma · Wallet", visible: true },
+    { id: "rJY6r", type: "frame", name: "W21 · Crypto wallet", visible: false },
+    {
+      id: "yZhTW",
+      type: "frame",
+      name: "Dracma · Desglose abierto · Wallet y tarjetas",
+      visible: true,
+    },
+  ];
+
+  it("a photo request names one screen, even with filler words and typos", () => {
+    for (const text of [
+      "toma una foto de la pantalla wallet únicamente",
+      "oma una foto de la pantalla wallet unicamente",
+    ]) {
+      const request = parsePenRequest(text);
+      expect(request).toMatchObject({ intent: "photo", only: true });
+      expect(pickPenNodes(nodes, request.query, 1).map((n) => n.id)).toEqual([
+        "I7gNe",
+      ]);
+    }
+    expect(parsePenRequest("wallet")).toEqual({
+      intent: "photo",
+      query: "wallet",
+      only: false,
+    });
+    expect(parsePenRequest("I7gNe")).toEqual({
+      intent: "photo",
+      query: "I7gNe",
+      only: true,
+    });
+    expect(parsePenRequest("lista")).toEqual({ intent: "list" });
+    expect(parsePenRequest("")).toEqual({
+      intent: "photo",
+      query: "",
+      only: false,
+    });
+  });
+
+  it("anything else is a change for the design agent", () => {
+    expect(
+      parsePenRequest("arregla el header de wallet, el logo está desalineado"),
+    ).toEqual({
+      intent: "edit",
+      request: "arregla el header de wallet, el logo está desalineado",
+    });
+  });
+
+  it("recognizes messages addressed to pen", () => {
+    expect(penMessage("pen, toma foto de wallet")).toBe("toma foto de wallet");
+    expect(penMessage("Pencil: lista")).toBe("lista");
+    expect(penMessage("en pen arregla el botón")).toBe(
+      "en pen arregla el botón",
+    );
+    expect(penMessage("pendiente revisar")).toBeNull();
+    expect(penMessage("hola")).toBeNull();
+  });
+
+  it("the design agent edits live and names the frames to photograph", () => {
+    const prompt = buildPenEditPrompt({
+      request: "arregla X",
+      uri: "file:///a.pen",
+      file: "a.pen",
+    });
+    expect(prompt).toContain("file:///a.pen");
+    expect(prompt).toContain("FOTO:");
+    expect(prompt).toMatch(/Don't call the\s+save tool/);
+    expect(parsePhotoIds("Cambié el header.\n**FOTO:** I7gNe, yZhTW")).toEqual([
+      "I7gNe",
+      "yZhTW",
+    ]);
+    expect(parsePhotoIds("sin fotos")).toEqual([]);
   });
 });

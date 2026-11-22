@@ -1780,7 +1780,9 @@ export const PEN_SHOT_TYPES = new Set(["frame", "group", "ref", "variants"]);
 
 /**
  * Picks the nodes to export: an exact id, the frames whose name contains
- * every word of the query, or (no query) the frames visible on the canvas.
+ * every word of the query (best match first: visible on the canvas, a name
+ * part equal to the query, then the shortest name), or (no query) the
+ * frames visible on the canvas.
  */
 export function pickPenNodes(nodes, query = "", max = 4) {
   const shots = nodes.filter((node) => PEN_SHOT_TYPES.has(node.type));
@@ -1791,10 +1793,135 @@ export function pickPenNodes(nodes, query = "", max = 4) {
   }
   const exact = nodes.find((node) => node.id === q);
   if (exact) return [exact];
-  const words = foldText(q).split(/\s+/).filter(Boolean);
-  return shots
-    .filter((node) => words.every((word) => foldText(node.name).includes(word)))
+  const folded = foldText(q);
+  const words = folded.split(/\s+/).filter(Boolean);
+  const score = (node) => {
+    const name = foldText(node.name);
+    const parts = name.split(/\s*[·|/>-]\s*/);
+    return (
+      (node.visible ? 4 : 0) +
+      (parts.includes(folded) ? 2 : 0) +
+      (name === folded ? 4 : 0)
+    );
+  };
+  const seen = new Set();
+  const unique = shots.filter(
+    (node) => !seen.has(node.id) && seen.add(node.id),
+  );
+  const hits = (node) =>
+    words.filter((word) => foldText(node.name).includes(word)).length;
+  let matches = unique.filter((node) => hits(node) === words.length);
+  // Typos ("oma wallet"): fall back to the frames matching the most words.
+  if (!matches.length && words.length > 1) {
+    const best = Math.max(0, ...unique.map(hits));
+    if (best > 0) matches = unique.filter((node) => hits(node) === best);
+  }
+  return matches
+    .sort((a, b) => score(b) - score(a) || a.name.length - b.name.length)
     .slice(0, max);
+}
+
+const PEN_FILLER = new Set(
+  (
+    "toma tomame tomar saca sacame haz hazme manda mandame envia enviame " +
+    "muestra muestrame ensena ensename dame quiero necesito ver por favor porfa " +
+    "una un unas unos la las el los lo de del al a en con para me mi mis que y o " +
+    "foto fotos captura capturas screenshot screenshots screen pantallazo imagen " +
+    "imagenes pantalla pantallas frame frames vista vistas diseno disenos " +
+    "unicamente solo solamente sola nada mas only just of the please take send " +
+    "show give me picture pic pen pencil pen.dev archivo file actual abierta abierto"
+  ).split(" "),
+);
+const PEN_PHOTO_RE =
+  /\b(foto|fotos|captura|capturas|screenshot|screen|pantallazo|imagen|muestra(me)?|ensena(me)?|picture|pic|show)\b/;
+const PEN_ONLY_RE = /\b(unicamente|solo|solamente|nada mas|only|just)\b/;
+const PEN_LIST_RE = /^(lista|list|ls|pantallas|frames|indice|index)$/;
+
+/**
+ * What a natural-language pen request asks for:
+ * { intent: "photo", query, only } | { intent: "list" } | { intent: "edit", request }.
+ */
+export function parsePenRequest(raw) {
+  const text = String(raw ?? "").trim();
+  const folded = foldText(text).replace(/[¿?¡!.,;:"']/g, " ");
+  const words = folded.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && PEN_LIST_RE.test(words[0]))
+    return { intent: "list" };
+  if (!words.length) return { intent: "photo", query: "", only: false };
+  // A node id looks like "I7gNe": mixed case or digits, no spaces.
+  if (
+    /^(?=.*[A-Z0-9])[A-Za-z0-9]{4,8}$/.test(text) &&
+    text !== text.toUpperCase()
+  )
+    return { intent: "photo", query: text, only: true };
+  const photo = PEN_PHOTO_RE.test(folded);
+  // A bare name ("wallet", "dashboard mega menu") is a photo request too.
+  const bare =
+    words.length <= 4 &&
+    !/\b(arregla|cambia|corrige|pon|quita|agrega|anade|crea|haz|mueve|alinea|ajusta|fix|change|make|add|remove)\b/.test(
+      folded,
+    );
+  if (photo || bare) {
+    const query = words.filter((word) => !PEN_FILLER.has(word)).join(" ");
+    return { intent: "photo", query, only: PEN_ONLY_RE.test(folded) };
+  }
+  return { intent: "edit", request: text };
+}
+
+/**
+ * A plain message addressed to pen ("pen, toma una foto de wallet", "en pen
+ * arregla el header"): returns the request without the address, else null.
+ */
+export function penMessage(text) {
+  const value = String(text ?? "").trim();
+  const lead = /^(?:@?pen(?:\.dev)?|pencil)\b[\s,:;-]*/i.exec(value);
+  if (lead) return value.slice(lead[0].length).trim();
+  if (/\b(?:en|in|on) (?:pen(?:\.dev)?|pencil)\b/i.test(value)) return value;
+  return null;
+}
+
+/** First message for the scope's design agent (pencil MCP). */
+export function buildPenEditPrompt({ request, uri = "", file = "" }) {
+  return [
+    "You are @pen, the design agent of this chat. You work in the user's pen.dev",
+    "(Pencil) app through the pencil MCP tools, following the pencil-design skill.",
+    uri
+      ? `Open document: ${file} (${uri}). Use this uri in every tool call.`
+      : "",
+    "",
+    "Do exactly what the user asks in the open design, no more. Start with",
+    "get_app_state and read_skill, then find the frames involved (execute with",
+    "Get and a visitor), make the change with execute, and check it with",
+    "TakeScreenshot. The user sees the change live in the app. Don't call the",
+    "save tool unless the user asks to save. Don't read .pen files as text.",
+    "If the request is unclear, ask one short question instead of guessing.",
+    "",
+    "Answer in Spanish in two or three lines: what you changed. Then end with",
+    "one line with the ids of the top-level frames to photograph, like:",
+    "FOTO: I7gNe, I98pva",
+    "",
+    `Request: ${request}`,
+  ]
+    .filter((line, index, all) => line !== "" || all[index - 1] !== "")
+    .join("\n");
+}
+
+/** Frame ids from the `FOTO:` line of the design agent's answer. */
+export function parsePhotoIds(text) {
+  const lines = String(text ?? "")
+    .replace(/\*\*|`/g, "")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(foto|fotos|photo|photos)\s*:/i.test(line));
+  if (!lines.length) return [];
+  return [
+    ...new Set(
+      lines
+        .at(-1)
+        .replace(/^[^:]*:/, "")
+        .split(/[\s,]+/)
+        .filter((id) => /^[A-Za-z0-9]{3,12}$/.test(id)),
+    ),
+  ].slice(0, 4);
 }
 
 /** pen.dev `execute` snippet that lists the document's top-level nodes. */

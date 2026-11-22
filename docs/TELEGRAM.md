@@ -167,7 +167,7 @@ so (fixes go through feature branches and PRs).
 | `/migrate <from → to>` | `migration-modernization` | A step-by-step plan for approval, then one PR per step. |
 | `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
 | `/design <task>` | `pencil-design` | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md). |
-| `/pen [screen\|id\|lista]` | — | No agent: the bridge exports the screens visible in the Pen app (or the ones whose name matches, or `lista` to list them) through the Pencil MCP and posts them as photos. |
+| `/pen <anything>` or "pen, …" | `pencil-design` | Talk to pen.dev in plain language. Photos ("foto de la pantalla wallet únicamente") and "lista" are answered by the bridge directly; changes ("arregla el header de wallet") go to the chat's design agent `@pen`, which edits live in the Pen app and the bridge then posts photos of the frames it changed. |
 
 ### Expert council: parallel work, debate and decisions
 

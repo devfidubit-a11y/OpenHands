@@ -54,10 +54,18 @@ agents report it and carry on without Pencil.
 /consejo ux, frontend, producto: mejorar el onboarding
 ```
 
-`/pen` takes a photo without any agent: the bridge asks the Pen app for the
-open file, exports the frames visible on the canvas (or `/pen wallet`, `/pen
-<id>`; `/pen lista` lists them) as PNG into `Documents/.pen-shots/`, posts
-them to the chat, and deletes the files.
+Talk to pen.dev in plain language with `/pen …`, or start a message with
+"pen," (or say "en pen …"):
+
+- Photos: "pen, toma una foto de la pantalla wallet únicamente" posts only
+  the best match; "pen wallet" posts up to 4 matches; "pen" alone posts the
+  frames visible on the canvas; "pen lista" lists every screen. No agent is
+  involved: the bridge exports the frames as PNG into `Documents/.pen-shots/`,
+  posts them, and deletes the files.
+- Changes: "pen, arregla el header de wallet, el logo está desalineado" goes
+  to the chat's design agent `@pen`. It edits the open document live (no
+  save unless you ask), and when it finishes the bridge posts photos of the
+  frames it changed.
 
 Agents never read `.pen` files as text (they are encrypted), and they ask
 before saving changes to an existing design file.

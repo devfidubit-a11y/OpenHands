@@ -28,6 +28,10 @@ import {
   parsePenNodeList,
   penExportSnippet,
   pickPenNodes,
+  buildPenEditPrompt,
+  parsePenRequest,
+  parsePhotoIds,
+  penMessage,
   toPenHostPath,
   COUNCIL_EXPERTS,
   buildCouncilDebatePrompt,
@@ -98,7 +102,7 @@ Agentes expertos (los reparte @coordinador):
 /security [enfoque] — auditoría de seguridad (solo lectura)
 /migrate <de → a> — migración por pasos (p. ej. JavaScript a TypeScript)
 /insights [nombre] — análisis de la sesión de un agente y lecciones a memoria
-/pen [pantalla|id|lista] — foto de las pantallas abiertas en pen.dev (o de la que nombres)
+/pen <lo que quieras> — habla con pen.dev en lenguaje natural: "foto de la pantalla wallet únicamente", "lista", "arregla el header de wallet" (te manda la foto al terminar). También vale escribir "pen, …" o "en pen …" sin comando
 /design <tarea> — frontend con pen.dev: diseño .pen → código (o código → diseño) vía Pencil MCP
 
 Consejo de expertos (trabajan en paralelo, debaten y votan):
@@ -667,7 +671,7 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
     case "pen":
     case "foto":
     case "screen":
-      return penScreenshots(chatId, args, messageId);
+      return handlePen(chatId, args, messageId);
 
     case "consejo":
     case "council":
@@ -751,6 +755,12 @@ async function handleMessage(message) {
     if (agent)
       return sendToAgent(chatId, agent, parsed.text, message.message_id);
     // Not one of our agents (e.g. mentioning a person): treat as plain text.
+  }
+
+  // "pen, toma una foto de wallet" / "en pen arregla el header": pen.dev.
+  const penText = penMessage(parsed.text ?? message.text);
+  if (penText !== null && config.penMcpUrl) {
+    return handlePen(chatId, penText, message.message_id);
   }
 
   // With BotFather privacy mode on (the default), a group only delivers
@@ -1079,113 +1089,184 @@ async function projectCommand(scope, args, message) {
 
 const PEN_SHOTS_DIR = "/documents/.pen-shots";
 
+function penClient() {
+  return new McpHttpClient({
+    url: config.penMcpUrl,
+    token: config.penMcpToken,
+  });
+}
+
+const PEN_DOWN =
+  "¿Está abierta la app Pen y el servicio pen-mcp-gateway en el Mac?";
+
+/** The open .pen document: { uri, file, nodes } (nodes: visible ones). */
+async function penDocument(pen) {
+  const { uri, nodes } = parsePenAppState(
+    (await pen.callTool("get_app_state")).text,
+  );
+  if (!uri) return null;
+  const file = decodeURIComponent(uri.split("/").pop() ?? uri);
+  return { uri, file, nodes };
+}
+
+/** Every top-level node of the document, visible ones first. */
+async function penAllNodes(pen, doc) {
+  const listed = await pen.callTool("execute", {
+    uri: doc.uri,
+    description: "List top-level frames for Telegram",
+    input: PEN_LIST_SNIPPET,
+  });
+  const full = parsePenNodeList(listed.text);
+  const seen = new Set(doc.nodes.map((node) => node.id));
+  return [...doc.nodes, ...full.filter((node) => !seen.has(node.id))];
+}
+
+/** Exports nodes as PNG through the Pen app and posts them as photos. */
+async function sendPenShots(chatId, pen, doc, picked) {
+  const hostDir = toPenHostPath(PEN_SHOTS_DIR);
+  if (!hostDir) throw new Error("falta PEN_HOST_DOCUMENTS_DIR en docker/.env");
+  const exported = await pen.callTool("execute", {
+    uri: doc.uri,
+    description: "Export frames for Telegram",
+    input: penExportSnippet(
+      picked.map((node) => node.id),
+      hostDir,
+    ),
+  });
+  if (exported.isError) throw new Error(exported.text.slice(0, 300));
+  for (const node of picked) {
+    const path = `${PEN_SHOTS_DIR}/${node.id}.png`;
+    try {
+      const data = await readFile(path);
+      const caption = `${node.name ?? node.id} · ${doc.file}`;
+      const filename = `${node.id}.png`;
+      await telegram.sendPhoto(chatId, data, { caption, filename }).catch(() =>
+        telegram.sendPhoto(chatId, data, {
+          caption,
+          filename,
+          asDocument: true,
+        }),
+      );
+    } catch (error) {
+      await say(chatId, `⚠️ ${node.name ?? node.id}: ${error.message}`);
+    } finally {
+      await rm(path, { force: true }).catch(() => {});
+    }
+  }
+}
+
 /**
- * /pen: exports design frames from the Pen app through the pencil MCP and
- * posts them as photos. No agent involved; the Pen app must be open.
+ * Talk to pen.dev in plain language (/pen …, "pen, …", "en pen …"):
+ * photos and the frame list are answered by the bridge directly; any other
+ * request goes to the chat's design agent @pen, whose result comes back
+ * with a photo of the frames it changed.
  */
-async function penScreenshots(chatId, args, messageId) {
+async function handlePen(chatId, text, messageId) {
   if (!config.penMcpUrl) {
     return say(
       chatId,
       "pen.dev no está conectado: falta PEN_MCP_URL en docker/.env (docs/PENCIL.md).",
     );
   }
-  const hostDir = toPenHostPath(PEN_SHOTS_DIR);
-  if (!hostDir) {
-    return say(chatId, "Falta PEN_HOST_DOCUMENTS_DIR en docker/.env.");
-  }
   const reply = messageId ? { replyTo: messageId } : {};
-  const pen = new McpHttpClient({
-    url: config.penMcpUrl,
-    token: config.penMcpToken,
-  });
+  const request = parsePenRequest(text);
+  const pen = penClient();
   try {
-    const appState = await pen.callTool("get_app_state");
-    const { uri, nodes } = parsePenAppState(appState.text);
-    if (!uri) {
+    const doc = await penDocument(pen);
+    if (!doc) {
       return say(
         chatId,
-        "No hay ningún archivo .pen abierto en la app Pen. Ábrelo y repite /pen.",
+        "No hay ningún archivo .pen abierto en la app Pen. Ábrelo y vuelve a pedírmelo.",
         reply,
       );
     }
-    const query = args.trim();
-    const file = decodeURIComponent(uri.split("/").pop() ?? uri);
-    let all = nodes;
-    if (query) {
-      const listed = await pen.callTool("execute", {
-        uri,
-        description: "List top-level frames for Telegram",
-        input: PEN_LIST_SNIPPET,
-      });
-      const full = parsePenNodeList(listed.text);
-      if (full.length) {
-        const seen = new Set(nodes.map((node) => node.id));
-        all = [...nodes, ...full.filter((node) => !seen.has(node.id))];
-      }
-    }
-    if (/^(lista|list|ls)$/i.test(query)) {
+    if (request.intent === "edit")
+      return penEdit(chatId, doc, request.request, reply);
+
+    const all =
+      request.intent === "list" || request.query
+        ? await penAllNodes(pen, doc)
+        : doc.nodes;
+    if (request.intent === "list") {
       const frames = all.filter((node) => node.type === "frame");
       return say(
         chatId,
-        `🎨 ${file}: ${frames.length} pantallas\n${frames
+        `🎨 ${doc.file}: ${frames.length} pantallas\n${frames
           .slice(0, 60)
           .map((node) => `• ${node.name} (${node.id})`)
           .join(
             "\n",
-          )}${frames.length > 60 ? "\n…" : ""}\n\n/pen <nombre o id> para la foto.`,
+          )}${frames.length > 60 ? "\n…" : ""}\n\nPídeme una: "pen, foto de wallet".`,
         reply,
       );
     }
-    const picked = pickPenNodes(all, query);
+    const picked = pickPenNodes(all, request.query, request.only ? 1 : 4);
     if (!picked.length) {
       return say(
         chatId,
-        `No encontré "${query}" en ${file}. Usa /pen lista para ver las pantallas.`,
+        `No encontré una pantalla "${request.query}" en ${doc.file}. Pide "pen lista" para ver los nombres.`,
         reply,
       );
     }
     await say(
       chatId,
-      `📸 Exportando ${picked.length} pantalla${picked.length === 1 ? "" : "s"} de ${file}…`,
+      `📸 ${picked.map((node) => node.name).join(", ")}…`,
       reply,
     );
-    const exported = await pen.callTool("execute", {
-      uri,
-      description: "Export frames for Telegram",
-      input: penExportSnippet(
-        picked.map((node) => node.id),
-        hostDir,
-      ),
-    });
-    if (exported.isError) throw new Error(exported.text.slice(0, 300));
-    for (const node of picked) {
-      const path = `${PEN_SHOTS_DIR}/${node.id}.png`;
-      try {
-        const data = await readFile(path);
-        const caption = `${node.name} · ${file}`;
-        await telegram
-          .sendPhoto(chatId, data, { caption, filename: `${node.id}.png` })
-          .catch(() =>
-            telegram.sendPhoto(chatId, data, {
-              caption,
-              filename: `${node.id}.png`,
-              asDocument: true,
-            }),
-          );
-      } catch (error) {
-        await say(chatId, `⚠️ ${node.name}: ${error.message}`);
-      } finally {
-        await rm(path, { force: true }).catch(() => {});
-      }
-    }
+    await sendPenShots(chatId, pen, doc, picked);
     return null;
   } catch (error) {
     return say(
       chatId,
-      `⚠️ No pude hablar con pen.dev: ${error.message}\n¿Está abierta la app Pen y el servicio pen-mcp-gateway en el Mac?`,
+      `⚠️ No pude hablar con pen.dev: ${error.message}\n${PEN_DOWN}`,
       reply,
     );
+  } finally {
+    await pen.close();
+  }
+}
+
+/** Sends a change request to the chat's design agent @pen (created on demand). */
+async function penEdit(chatId, doc, request, reply) {
+  const chat = state.chat(chatId);
+  const prompt = buildPenEditPrompt({ request, uri: doc.uri, file: doc.file });
+  let agent = chat.agents.find((item) => item.penAgent);
+  if (agent) {
+    await server.sendMessage(agent.id, prompt);
+    markPending(agent);
+  } else {
+    agent = await createAgent(chatId, {
+      name: "pen",
+      task: prompt,
+      extra: { penAgent: true },
+    });
+  }
+  agent.penPending = true;
+  save();
+  return say(
+    chatId,
+    `🎨 @${agent.name} está haciendo el cambio en ${doc.file}. Lo verás en vivo en Pen y te mando la foto al terminar.`,
+    reply,
+    agent,
+  );
+}
+
+/** After @pen finishes: photos of the frames it names in its FOTO: line. */
+async function penAgentDone(chatId, agent, response) {
+  agent.penPending = false;
+  const ids = parsePhotoIds(response);
+  if (!ids.length || !config.penMcpUrl) return;
+  const pen = penClient();
+  try {
+    const doc = await penDocument(pen);
+    if (!doc) return;
+    const all = await penAllNodes(pen, doc);
+    const picked = ids.map(
+      (id) => all.find((node) => node.id === id) ?? { id, name: id },
+    );
+    await sendPenShots(chatId, pen, doc, picked);
+  } catch (error) {
+    await say(chatId, `⚠️ No pude sacar la foto del cambio: ${error.message}`);
   } finally {
     await pen.close();
   }
@@ -1287,6 +1368,7 @@ async function watchAgents() {
             agent,
           );
           if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
+          if (agent.penPending) await penAgentDone(chatId, agent, response);
         } else if (event === "problem") {
           const reason =
             next === "error"
