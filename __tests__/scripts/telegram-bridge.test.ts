@@ -18,6 +18,9 @@ import {
   buildPenEditPrompt,
   buildPenUxPrompt,
   allowRelay,
+  buildGreeting,
+  findInlineCommand,
+  smallTalk,
   CHAT_TOOLS,
   appendChatLog,
   formatChatLog,
@@ -1266,5 +1269,55 @@ describe("agent_chat MCP", () => {
     expect(buildAgentNetworkNote("ux", [], "-100:7")).toContain(
       'chat="-100:7" and from="ux"',
     );
+  });
+});
+
+describe("natural chat", () => {
+  it("answers greetings and thanks without an agent", () => {
+    for (const text of [
+      "hola",
+      "Hola equipo!",
+      "buenos días",
+      "qué tal",
+      "hey 👋",
+    ]) {
+      expect(smallTalk(text)).toBe("greeting");
+    }
+    expect(smallTalk("gracias!")).toBe("thanks");
+    expect(smallTalk("hola, arregla el login")).toBeNull();
+    expect(smallTalk("")).toBeNull();
+  });
+
+  it("finds a command written inside a sentence", () => {
+    const known = new Set(["team", "pen"]);
+    expect(findInlineCommand("hola /team arma el login", known)).toEqual({
+      command: "team",
+      args: "arma el login",
+      before: "hola",
+    });
+    expect(
+      findInlineCommand("hola /team@openhands_fidubot", known),
+    ).toMatchObject({ command: "team", args: "" });
+    expect(findInlineCommand("mira /usr/bin y /otro", known)).toBeNull();
+  });
+
+  it("greets with what the team is doing", () => {
+    const text = buildGreeting({
+      user: "Alain",
+      agents: [
+        { name: "ux", lastStatus: "running" },
+        { name: "pen", lastStatus: "idle" },
+      ],
+      project: "dracma-web",
+      dir: "/documents/dracma-web",
+    });
+    expect(text).toContain("¡Hola, Alain!");
+    expect(text).toContain("dracma-web");
+    expect(text).toContain("@ux está trabajando");
+    expect(buildGreeting({})).toContain("Aún no hay agentes");
+  });
+
+  it("tells the coordinator to talk like a teammate", () => {
+    expect(buildCoordinatorPrompt("hola")).toMatch(/teammate/);
   });
 });

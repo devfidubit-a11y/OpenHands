@@ -121,6 +121,21 @@ Replies to an agent's message and `@name message` always go to that agent.
 | `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
 | `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
 
+### Natural chat
+
+Talk to the bot like to a teammate. "hola" gets an instant answer with what
+the team is doing; "gracias" too. A command inside a sentence works
+("hola /team arma el login"), and `/team` alone asks what the team is for and
+takes your next message as the goal. Anything else goes to `@coordinador`,
+who answers briefly or splits the work, and the bot shows "typing…" while it
+works.
+
+**In groups, turn off privacy mode**, or Telegram only delivers commands,
+@mentions and replies to the bot (plain "hola" never arrives): in
+@BotFather send `/setprivacy`, pick the bot, choose **Disable**, then remove
+the bot from the group and add it again (or make it an admin). The bridge
+logs a warning at start while privacy mode is on.
+
 ### Agents talk to agents (and humans) in the chat
 
 The chat is shared by humans and agents. Every agent learns who else is in

@@ -20,6 +20,9 @@ import {
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
+  buildGreeting,
+  findInlineCommand,
+  smallTalk,
   CHAT_MCP_KEY,
   appendChatLog,
   formatChatLog,
@@ -167,6 +170,20 @@ const COMMANDS = [
   ["profiles", "Perfiles de agente"],
   ["help", "Ayuda"],
 ].map(([command, description]) => ({ command, description }));
+
+const KNOWN_COMMANDS = new Set([
+  ...COMMANDS.map(({ command }) => command),
+  "consejo",
+  "council",
+  "debate",
+  "proyecto",
+  "projects",
+  "proyectos",
+  "foto",
+  "screen",
+  "schedules",
+  "whoami",
+]);
 
 const config = loadConfig();
 const state = BridgeState.load(config.statePath);
@@ -420,7 +437,16 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
     case "team": {
       const { name, task, invalidName } = parseNewArgs(args);
       if (invalidName) return say(chatId, `Nombre inválido "${invalidName}".`);
-      if (!task) return say(chatId, "Uso: /team [@nombre] <tarea>");
+      if (!task) {
+        chat.pendingTeam = true;
+        save();
+        return say(
+          chatId,
+          "¡Vamos! 🙌 ¿Para qué armamos el equipo? Cuéntame el objetivo y yo lo reparto entre los agentes.",
+          messageId ? { replyTo: messageId } : {},
+        );
+      }
+      delete chat.pendingTeam;
       const lead = await createAgent(chatId, {
         name: name ?? "lider",
         task: buildLeadPrompt(task),
@@ -779,6 +805,54 @@ async function handleMessage(message) {
       message,
     );
   }
+
+  const room = state.chat(chatId);
+  if (parsed.kind === "text") {
+    // "hola /team arma el login": a command written inside a sentence.
+    const inline = findInlineCommand(parsed.text, KNOWN_COMMANDS);
+    if (inline) {
+      return handleCommand(
+        chatId,
+        inline.command,
+        inline.args,
+        message.message_id,
+        message,
+      );
+    }
+    // The answer to "¿Para qué armamos el equipo?".
+    if (room.pendingTeam && !message.reply_to_message) {
+      return handleCommand(
+        chatId,
+        "team",
+        parsed.text,
+        message.message_id,
+        message,
+      );
+    }
+    const social = smallTalk(parsed.text);
+    if (social === "greeting") {
+      return say(
+        chatId,
+        buildGreeting({
+          user: message.from?.first_name ?? "",
+          agents: room.agents,
+          project: room.project ?? "",
+          dir: workingDirFor(room),
+        }),
+        { replyTo: message.message_id },
+      );
+    }
+    if (social === "thanks") {
+      return say(
+        chatId,
+        "¡Con gusto! 🙌 Aquí seguimos si necesitas algo más.",
+        {
+          replyTo: message.message_id,
+        },
+      );
+    }
+  }
+  telegram.sendChatAction(chatId, "typing").catch(() => {});
 
   const replied = message.reply_to_message
     ? state.agentForReply(chatId, message.reply_to_message.message_id)
@@ -1482,7 +1556,7 @@ async function watchAgents() {
           const response = await server.finalResponse(agent.id).catch(() => "");
           await say(
             chatId,
-            `✅ @${agent.name} terminó:\n\n${response || "(sin respuesta final)"}`,
+            `✅ @${agent.name}: ${response || "terminé, pero no dejé un mensaje final."}`,
             {},
             agent,
           );
@@ -1866,6 +1940,11 @@ async function main() {
   }
   save();
   log(`Connected as @${me.username}`);
+  if (me.can_read_all_group_messages === false) {
+    log(
+      "Privacy mode is ON: in groups the bot only sees commands, @mentions and replies. For natural chat, @BotFather → /setprivacy → Disable, then remove and re-add the bot to the group.",
+    );
+  }
   if (config.allowedChats.size === 0) {
     log(
       "SETUP MODE: TELEGRAM_ALLOWED_CHAT_IDS is empty, so only /whoami is answered.",

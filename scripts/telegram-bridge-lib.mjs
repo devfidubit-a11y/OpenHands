@@ -424,6 +424,8 @@ export function buildCoordinatorPrompt(
   return [
     "You are the coordinator of a team of AI agents. The user talks to you from",
     "Telegram; the bridge creates and runs the agents you assign.",
+    "Talk like a teammate in a chat: answer in the user's language, short and",
+    "warm, no headings or long reports for small talk or quick questions.",
     workingDir ? `Working folder: ${workingDir}` : "",
     "",
     "- If the request is a question, a small task, or a status check, do it or",
@@ -859,6 +861,16 @@ export class TelegramClient {
     if (!result.ok)
       throw new Error(`Telegram ${method} failed: ${result.description}`);
     return result.result;
+  }
+
+  /** Shows "typing…" in the chat (or topic) for a few seconds. */
+  sendChatAction(scope, action = "typing") {
+    const { chatId, threadId } = splitScope(scope);
+    return this.call("sendChatAction", {
+      chat_id: chatId,
+      ...(threadId ? { message_thread_id: threadId } : {}),
+      action,
+    });
   }
 
   /** Creates a topic in a forum group; returns its message_thread_id. */
@@ -2311,4 +2323,82 @@ export async function handleMcpMessage(message, handlers, tools = CHAT_TOOLS) {
         error: { code: -32601, message: "Method not found" },
       };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Natural chat: greetings get an instant answer, and a command written inside
+// a sentence ("hola /team arma el login") still works.
+// ---------------------------------------------------------------------------
+
+/**
+ * A known command written after other words: "hola /team arma el login" →
+ * { command: "team", args: "arma el login", before: "hola" }, else null.
+ */
+export function findInlineCommand(text, known) {
+  const value = String(text ?? "");
+  const pattern = /(^|\s)\/([a-z_]+)(?:@\S+)?(?=\s|$)/gi;
+  for (const match of value.matchAll(pattern)) {
+    const command = match[2].toLowerCase();
+    if (!known.has(command)) continue;
+    const end = match.index + match[0].length;
+    return {
+      command,
+      args: value.slice(end).trim(),
+      before: value.slice(0, match.index).trim(),
+    };
+  }
+  return null;
+}
+
+const GREETING_RE =
+  /^(hola+|holi|hey|hi|hello|buenas|buen[oa]s? (dias|tardes|noches)|que tal|que mas|como (estas|estan|vas|van)|saludos|ey|epa|alo|buenas buenas)$/;
+const THANKS_RE =
+  /^(gracias|muchas gracias|mil gracias|thanks|thank you|genial gracias|ok gracias|perfecto gracias|listo gracias)$/;
+
+/** "greeting", "thanks" or null for a short social message. */
+export function smallTalk(text) {
+  const folded = String(text ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[¿?¡!.,;:👋🙌😊🙂]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(
+      / (equipo|team|bot|chicos|a todos|todos|gente|crack|amigo|amigos)$/,
+      "",
+    )
+    .replace(/^(hola|hey|buenas) (hola|hey|buenas)$/, "$1");
+  if (!folded) return null;
+  if (GREETING_RE.test(folded)) return "greeting";
+  if (THANKS_RE.test(folded)) return "thanks";
+  return null;
+}
+
+/** An instant, natural answer to a greeting, with what the team is doing. */
+export function buildGreeting({
+  user = "",
+  agents = [],
+  project = "",
+  dir = "",
+}) {
+  const busy = agents.filter((agent) => agent.lastStatus === "running");
+  const hello = `¡Hola${user ? `, ${user}` : ""}! 👋`;
+  const where = project
+    ? `Estamos en ${project} (${dir}).`
+    : dir
+      ? `Trabajamos en ${dir}.`
+      : "";
+  const status = busy.length
+    ? `Ahora mismo ${busy.map((agent) => `@${agent.name}`).join(", ")} ${busy.length === 1 ? "está" : "están"} trabajando.`
+    : agents.length
+      ? "El equipo está libre."
+      : "Aún no hay agentes trabajando; los creo cuando me pidas algo.";
+  return [
+    `${hello} ${where} ${status}`.replace(/\s+/g, " ").trim(),
+    "Cuéntame qué necesitas con tus palabras, por ejemplo:",
+    "• «arma un equipo para el login con Google»",
+    "• «pen, foto de la pantalla wallet»",
+    "• «revisa la ux del dashboard»",
+  ].join("\n");
 }
