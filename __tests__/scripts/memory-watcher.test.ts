@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildConversationNote,
   findGitRepos,
+  inferWhere,
   keepGraphifyLocal,
   McpStdioClient,
   needsSummary,
@@ -66,8 +67,44 @@ describe("buildConversationNote", () => {
       conversation_id: "c-1",
       agent: "claude-code",
       working_dir: "/projects/c1",
+      folder: "/projects/c1",
+      workspace: "/projects/c1",
       updated_at: conversation.updated_at,
     });
+  });
+
+  it("keeps a Telegram conversation in its chat topic", () => {
+    const note = buildConversationNote({
+      conversation: {
+        ...conversation,
+        tags: { telegramchat: "-1004309547955:7" },
+      },
+      firstUserText: "hola",
+      finalResponse: "listo",
+    });
+    expect(note.metadata.scope).toBe("-1004309547955:7");
+  });
+});
+
+describe("inferWhere", () => {
+  it("places old notes by working dir, source path or project", () => {
+    const repos = ["/documents/dracma-web"];
+    expect(inferWhere({ working_dir: "/nowhere/x" }, repos)).toEqual({
+      workspace: "/nowhere/x",
+      folder: "/nowhere/x",
+    });
+    expect(
+      inferWhere(
+        { type: "lesson", project: "dracma-web", source: "lesson:abc" },
+        repos,
+      ),
+    ).toEqual({
+      workspace: "/documents/dracma-web",
+      folder: "/documents/dracma-web",
+    });
+    expect(inferWhere({ type: "lesson", source: "lesson:abc" }, repos)).toBe(
+      null,
+    );
   });
 });
 

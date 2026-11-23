@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   QualityStore,
+  alwaysOnTargets,
   buildCaseRunPrompt,
   buildCuratorPrompt,
   buildFeedbackPrompt,
@@ -30,6 +31,7 @@ import {
   checkCase,
   feedbackStats,
   formatScoreboard,
+  installAlwaysOn,
   installLearnedSkills,
   lintSkillsDir,
   parseEvalLines,
@@ -42,12 +44,15 @@ import {
   validateProposal,
 } from "./agent-quality-lib.mjs";
 import {
+  MEMORY_LEVELS,
   QdrantRest,
   buildChunkNotes,
   buildLessonNote,
   findRepoRoot,
   ingestSource,
   ingestible,
+  memoryFilter,
+  memoryWhere,
   readSourceFile,
   runGraphify,
   storeNotes,
@@ -176,7 +181,7 @@ Calidad y aprendizaje (feedback loop):
 /mejora [enfoque] — @curador convierte el feedback y los evals en nuevas skills, reglas (guardrails) o casos; tú apruebas cada una
 /mejora lista — lo aprendido · /mejora quitar regla <n> | skill <nombre> | eval <id>
 Memoria del equipo (Qdrant + grafo graphify, siempre conectada a todos los agentes):
-/memoria — qué sabe el equipo · /memoria buscar <q> · /memoria aprende <lección>
+/memoria — qué sabe este tema · /memoria buscar [tema|carpeta|workspace|todo] <q> · /memoria aprende <lección>
 /ingest <ruta | carpeta | URL> — ingiere datos en la memoria (y actualiza el grafo del repo)
 (manda un archivo al chat) — lo guardo en la memoria; si pones un texto, se lo paso a @coordinador
 /mejora auto on|off — automejora: aplica sola las reglas y casos validados (las skills siempre las apruebas tú)
@@ -290,6 +295,22 @@ const SKILL_TARGETS = [
     "skills",
   ),
 ];
+/**
+ * The protocol + learned rules in every agent's permanent context, OpenHands
+ * UI agents included (installAlwaysOn). Rewritten when the rules change.
+ */
+let alwaysOnReady = false;
+function syncAlwaysOn() {
+  const written = installAlwaysOn(
+    quality.guardrails(),
+    alwaysOnTargets(process.env, homedir()),
+  );
+  alwaysOnReady = written.some((path) => path.endsWith(".md"));
+  return written;
+}
+/** Where a chat's memory lives: its topic, workspace and folder. */
+const whereOf = (chatId) =>
+  memoryWhere({ scope: chatId, folder: workingDirFor(state.chat(chatId)) });
 const builtinSkills = () =>
   BUILTIN_SKILLS_DIR
     ? readdirSync(BUILTIN_SKILLS_DIR).filter((name) =>
@@ -455,7 +476,7 @@ async function createAgent(
   const others = chat.agents.map((item) => item.name);
   const conversation = await server.createConversation({
     profileId,
-    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others, config.chatMcpPort ? String(chatId) : "")}${buildQualityNote(quality.guardrails())}${task}`,
+    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others, config.chatMcpPort ? String(chatId) : "")}${buildQualityNote(quality.guardrails(), { where: memoryWhere({ scope: chatId, folder: dir }), alwaysOn: alwaysOnReady })}${task}`,
     workingDir: dir,
     chatId,
     project: chat.project ?? null,
@@ -2395,6 +2416,7 @@ async function improveCommand(chatId, args, messageId) {
     let done = false;
     if (type === "regla" || type === "rule")
       done = Boolean(quality.removeGuardrail(Number(target) - 1));
+    if (done && (type === "regla" || type === "rule")) syncAlwaysOn();
     else if (type === "skill") {
       done = quality.removeSkill(target);
       if (done) uninstallSkill(target, SKILL_TARGETS);
@@ -2512,8 +2534,10 @@ async function handleProposal(chatId, query, action, id) {
 /** Applies a validated proposal, saves it as a lesson and reports it. */
 async function applyProposal(chatId, item, who) {
   try {
-    if (item.type === "guardrail") quality.addGuardrail(item.content);
-    else if (item.type === "skill") {
+    if (item.type === "guardrail") {
+      quality.addGuardrail(item.content);
+      syncAlwaysOn();
+    } else if (item.type === "skill") {
       quality.writeSkill(item.name, item.content);
       installLearnedSkills(quality, SKILL_TARGETS);
     } else quality.writeCase(JSON.parse(item.content));
@@ -2608,6 +2632,7 @@ async function learn(
       agent,
       origin,
       evidence,
+      where: whereOf(chatId),
     });
     await storeNotes([note], { store: memoryStore, rest: qdrantRest });
     return true;
@@ -2636,13 +2661,16 @@ async function ingestCommand(chatId, args, messageId) {
       store: memoryStore,
       rest: qdrantRest,
       project: chat.project ?? null,
+      // It belongs to this topic's workspace, wherever the file lives.
+      scope: chatId,
+      folder: workingDirFor(chat),
       allowedRoots: /^https?:/i.test(source) ? [] : KNOWLEDGE_ROOTS,
     });
     const repo = !/^https?:/i.test(source) ? findRepoRoot(source) : null;
     if (repo) runGraphify(["update", repo], repo, 30 * 60_000).catch(() => {});
     return say(
       chatId,
-      `🧠 Ingerido en la memoria: ${result.sources} fuente(s), ${result.chunks} fragmento(s)${result.skipped.length ? ` · omití ${result.skipped.length} (binarios, secretos o vacíos)` : ""}.${repo ? `\n🕸️ Actualizando el grafo de ${repo}.` : ""}\nLos agentes lo encuentran con qdrant-find.`,
+      `🧠 Ingerido en la memoria: ${result.sources} fuente(s), ${result.chunks} fragmento(s)${result.skipped.length ? ` · omití ${result.skipped.length} (binarios, secretos o vacíos)` : ""}.${repo ? `\n🕸️ Actualizando el grafo de ${repo}.` : ""}\nLos agentes de este tema lo encuentran con memory_search.`,
       messageId ? { replyTo: messageId } : {},
     );
   } catch (error) {
@@ -2685,6 +2713,7 @@ async function handleDocument(message) {
       project: chat.project ?? null,
       kind: "document",
       tags: ["telegram"],
+      where: whereOf(chatId),
     });
     const chunks = await storeNotes(notes, {
       store: memoryStore,
@@ -2724,20 +2753,30 @@ async function memoryCommand(chatId, args) {
       chatId,
       "La memoria (QDRANT_URL) no está configurada en este contenedor.",
     );
+  const where = whereOf(chatId);
   if (sub === "buscar" || sub === "search" || sub === "find") {
+    const level = MEMORY_LEVELS.includes(rest[0]) ? rest.shift() : "tema";
     const query = rest.join(" ");
-    if (!query) return say(chatId, "Uso: /memoria buscar <qué>");
+    if (!query)
+      return say(
+        chatId,
+        "Uso: /memoria buscar [tema|carpeta|workspace|todo] <qué> — por defecto solo este tema y su workspace.",
+      );
     try {
+      const filter = memoryFilter(where, level);
       const result = await (
         await memoryTools()
-      ).callTool("qdrant-find", { query });
+      ).callTool("qdrant-find", {
+        query,
+        ...(filter ? { query_filter: filter } : {}),
+      });
       const found = (result?.content ?? [])
         .map((item) => item.text)
         .join("\n")
         .trim();
       return say(
         chatId,
-        `🔎 Memoria — "${query}":\n\n${(found || "Nada encontrado.").slice(0, 3500)}`,
+        `🔎 Memoria (${level}${where.workspace && level !== "todo" ? ` · ${level === "carpeta" ? where.folder : where.workspace}` : ""}) — "${query}":\n\n${(found && !/^No information found/i.test(found) ? found : "Nada encontrado.").slice(0, 3500)}`,
       );
     } catch (error) {
       memoryMcp = null;
@@ -2747,22 +2786,24 @@ async function memoryCommand(chatId, args) {
   if (sub === "aprende" || sub === "learn") {
     const lesson = rest.join(" ");
     if (!lesson)
-      return say(chatId, "Uso: /memoria aprende <lección para todo el equipo>");
+      return say(
+        chatId,
+        "Uso: /memoria aprende <lección para los agentes de este tema y su workspace>",
+      );
     return say(
       chatId,
       (await learn(chatId, lesson, { origin: "human" }))
-        ? "🧠 Lección guardada para todos los agentes."
+        ? "🧠 Lección guardada en la memoria de este tema."
         : "⚠️ No pude guardarla.",
     );
   }
   try {
-    const counts = await qdrantRest.countByType([
-      "conversation-summary",
-      "project-doc",
-      "document",
-      "web",
-      "lesson",
-    ]);
+    const filter = memoryFilter(where, "tema");
+    const counts = await qdrantRest.countByType(
+      ["conversation-summary", "project-doc", "document", "web", "lesson"],
+      filter,
+    );
+    const mine = await qdrantRest.count(filter);
     const total = await qdrantRest.count();
     const labels = {
       "conversation-summary": "resúmenes de conversaciones",
@@ -2774,13 +2815,13 @@ async function memoryCommand(chatId, args) {
     return say(
       chatId,
       [
-        `🧠 Memoria del equipo (Qdrant): ${total} notas`,
+        `🧠 Memoria de este tema (${where.workspace ?? "sin carpeta"}): ${mine} de ${total} notas`,
         ...Object.entries(counts).map(
           ([key, value]) => `• ${labels[key]}: ${value}`,
         ),
         `🛡️ Reglas aprendidas: ${quality.guardrails().length} · 🧰 skills aprendidas: ${quality.learnedSkills().length} · automejora ${state.chat(chatId).autoImprove === false ? "off" : "on"}`,
-        "Todos los agentes usan qdrant_memory + knowledge (grafo graphify) siempre.",
-        "/memoria buscar <q> · /memoria aprende <lección> · /ingest <ruta|URL> · manda un archivo",
+        "Separada por tema, workspace y carpeta; todos los agentes (Telegram y OpenHands) usan memory_search + grafo graphify siempre.",
+        "/memoria buscar [tema|carpeta|workspace|todo] <q> · /memoria aprende <lección> · /ingest <ruta|URL> · manda un archivo",
       ].join("\n"),
     );
   } catch (error) {
@@ -3110,6 +3151,8 @@ async function main() {
   }
   const learned = installLearnedSkills(quality, SKILL_TARGETS);
   if (learned.length) log(`Learned skills installed: ${learned.join(", ")}`);
+  const always = syncAlwaysOn();
+  if (always.length) log(`Team protocol always on in: ${always.join(", ")}`);
   startChatMcpServer();
   registerChatMcp().catch((error) =>
     log("agent_chat MCP registration", error.message),

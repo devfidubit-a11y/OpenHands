@@ -35,7 +35,7 @@ export function buildKnowledgeMcpServer(env) {
       KNOWLEDGE_ROOTS: env.KNOWLEDGE_ROOTS || "/projects,/documents,/workspace",
     },
     description:
-      "Team knowledge: graphify code graph (graph_report, graph_explain, graph_path) and data ingestion into the shared memory (memory_ingest, memory_learn)",
+      "Team knowledge: graphify code graph (graph_report, graph_explain, graph_path) and the team memory separated per topic, workspace and folder (memory_search, memory_ingest, memory_learn)",
   };
 }
 
@@ -45,6 +45,10 @@ export function buildMemoryMcpServer(env) {
     COLLECTION_NAME: env.MEMORY_COLLECTION || "agent-memory",
     EMBEDDING_MODEL:
       env.MEMORY_EMBEDDING_MODEL || "sentence-transformers/all-MiniLM-L6-v2",
+
+    // qdrant-find takes a query_filter: memory_search keeps each topic,
+    // workspace and folder apart with it (docs/MEMORY.md).
+    QDRANT_ALLOW_ARBITRARY_FILTER: "true",
   };
   if (env.FASTEMBED_CACHE_PATH) {
     serverEnv.FASTEMBED_CACHE_PATH = env.FASTEMBED_CACHE_PATH;

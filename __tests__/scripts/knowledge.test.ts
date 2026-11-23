@@ -13,6 +13,8 @@ import {
   htmlToText,
   ingestSource,
   ingestible,
+  memoryFilter,
+  memoryWhere,
   projectDocs,
 } from "../../scripts/knowledge-lib.mjs";
 import {
@@ -207,6 +209,109 @@ describe("project knowledge", () => {
       match: { value: "a.md" },
     });
     expect(await rest.count()).toBe(3);
+  });
+});
+
+describe("separated memory (topic, workspace, folder)", () => {
+  it("places a folder in its repository workspace", () => {
+    const repo = tempDir();
+    mkdirSync(join(repo, ".git"));
+    mkdirSync(join(repo, "web/src"), { recursive: true });
+    expect(
+      memoryWhere({ scope: "-100:7", folder: join(repo, "web/src") }),
+    ).toEqual({
+      scope: "-100:7",
+      workspace: repo,
+      folder: join(repo, "web/src"),
+    });
+    expect(memoryWhere({})).toEqual({
+      scope: null,
+      workspace: null,
+      folder: null,
+    });
+  });
+
+  it("filters per level", () => {
+    const where = { scope: "-100:7", workspace: "/w", folder: "/w/web" };
+    expect(memoryFilter(where, "tema")).toEqual({
+      must: [{ key: "metadata.workspace", match: { value: "/w" } }],
+      should: [
+        { key: "metadata.scope", match: { value: "-100:7" } },
+        { is_empty: { key: "metadata.scope" } },
+      ],
+    });
+    expect(memoryFilter(where, "carpeta")).toEqual({
+      must: [{ key: "metadata.folder", match: { value: "/w/web" } }],
+    });
+    expect(memoryFilter(where, "workspace")).toEqual({
+      must: [{ key: "metadata.workspace", match: { value: "/w" } }],
+    });
+    expect(memoryFilter(where, "todo")).toBeNull();
+  });
+
+  it("stores lessons and ingested files with their place", async () => {
+    const lesson = buildLessonNote({
+      lesson: "Use pnpm.",
+      where: { scope: "-100:7", workspace: "/w", folder: "/w" },
+    });
+    const other = buildLessonNote({
+      lesson: "Use pnpm.",
+      where: { scope: "-100:8", workspace: "/w", folder: "/w" },
+    });
+    expect(lesson.metadata).toMatchObject({ scope: "-100:7", workspace: "/w" });
+    // the same lesson in another topic is its own note, not a replacement
+    expect(lesson.metadata.source).not.toBe(other.metadata.source);
+
+    const root = tempDir();
+    writeFileSync(join(root, "notes.md"), "Deploy on Fridays is banned.");
+    const { notes, store } = fakeStore();
+    await ingestSource(join(root, "notes.md"), {
+      store,
+      scope: "-100:7",
+      folder: "/w",
+      allowedRoots: [root],
+    });
+    expect(notes[0].metadata).toMatchObject({
+      scope: "-100:7",
+      workspace: "/w",
+      folder: "/w",
+    });
+  });
+
+  it("memory_search only looks inside this topic's workspace", async () => {
+    const calls: unknown[] = [];
+    const qdrant = {
+      running: true,
+      callTool: async (name: string, args: unknown) => {
+        calls.push([name, args]);
+        return { content: [{ type: "text", text: "<entry>pnpm</entry>" }] };
+      },
+    };
+    const repo = tempDir();
+    mkdirSync(join(repo, ".git"));
+    const handlers = createKnowledgeHandlers(
+      { QDRANT_URL: "http://q" },
+      { qdrant, rest: null },
+    );
+    const reply = await handlers.memory_search({
+      query: "package manager",
+      path: repo,
+      scope: "-100:7",
+    });
+    expect(reply.content[0].text).toContain(`Memoria (${repo} · tema -100:7)`);
+    expect(calls[0]).toEqual([
+      "qdrant-find",
+      {
+        query: "package manager",
+        query_filter: memoryFilter(
+          { scope: "-100:7", workspace: repo, folder: repo },
+          "tema",
+        ),
+      },
+    ]);
+    await expect(
+      handlers.memory_search({ query: "x", path: repo, level: "nope" }),
+    ).rejects.toThrow("level must be");
   });
 });
 

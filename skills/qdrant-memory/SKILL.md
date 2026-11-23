@@ -9,10 +9,19 @@ You have long-term memory that persists across conversations and agents. It is
 a semantic store: you save short notes and later find them by meaning, not by
 exact words.
 
-Tools (from the `qdrant_memory` MCP server):
+Memory is separated per chat topic, workspace (repository) and folder.
 
-- `qdrant-find(query)`: search memory. Returns the closest notes.
-- `qdrant-store(information, metadata)`: save one note.
+Tools:
+
+- `memory_search(query, path, scope?, level?)` (knowledge server): search the
+  memory of your topic and workspace. Use it first. `path` is your working
+  folder. `level` is `tema` (default), `carpeta`, `workspace` or `todo`.
+- `memory_learn(lesson, path, scope?)` (knowledge server): save a lesson in
+  your workspace and topic.
+- `qdrant-find(query, query_filter?)`: raw search. Without a filter it mixes
+  every project.
+- `qdrant-store(information, metadata)`: save one raw note. Put `workspace`
+  (the repo root) and `folder` in `metadata`.
 
 ## When to recall
 

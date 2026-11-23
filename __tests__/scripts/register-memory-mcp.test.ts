@@ -47,6 +47,7 @@ describe("registerMemoryMcp", () => {
         QDRANT_URL: "http://qdrant:6333",
         COLLECTION_NAME: "agent-memory",
         EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2",
+        QDRANT_ALLOW_ARBITRARY_FILTER: "true",
         FASTEMBED_CACHE_PATH: "/cache",
       },
     });

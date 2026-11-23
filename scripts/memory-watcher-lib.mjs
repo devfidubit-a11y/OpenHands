@@ -55,6 +55,47 @@ export function needsSummary(conversation, entry) {
   return entry.updatedAt !== conversation.updated_at;
 }
 
+/** The nearest folder at or above `dir` with a .git or graphify-out. */
+export function repoRootOf(dir) {
+  let current = String(dir).replace(/\/+$/, "") || "/";
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (
+      existsSync(join(current, ".git")) ||
+      existsSync(join(current, "graphify-out"))
+    )
+      return current;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+/**
+ * Where an old note (stored before notes had a place) belongs, from what it
+ * already says: its working dir, its source path, or its project name
+ * matched against the known repositories. Null when it can't tell.
+ */
+export function inferWhere(metadata, repos = []) {
+  const meta = metadata ?? {};
+  const byProject = meta.project
+    ? repos.find((repo) => repo.split("/").pop() === meta.project)
+    : null;
+  const folder =
+    meta.working_dir ||
+    (typeof meta.source === "string" && meta.source.startsWith("/")
+      ? dirname(meta.source)
+      : null) ||
+    byProject ||
+    null;
+  if (!folder) return null;
+  const workspace =
+    (meta.type === "project-doc" || meta.type === "lesson") && byProject
+      ? byProject
+      : (repoRootOf(folder) ?? folder);
+  return { workspace, folder };
+}
+
 /** Build the note stored in memory for one finished conversation turn. */
 export function buildConversationNote({
   conversation,
@@ -63,6 +104,10 @@ export function buildConversationNote({
 }) {
   const tags = tagsOf(conversation);
   const workingDir = conversation?.workspace?.working_dir ?? "";
+  // Telegram conversations carry their chat/topic; UI ones are shared by
+  // their workspace (docs/MEMORY.md, "Separated memory").
+  const scope = tags.telegramchat ? String(tags.telegramchat) : "";
+  const workspace = workingDir ? (repoRootOf(workingDir) ?? workingDir) : "";
   const title = truncate(conversation?.title || firstUserText, 120);
   const project = tags.project ?? "";
   const lines = [
@@ -78,7 +123,10 @@ export function buildConversationNote({
       source: "auto",
       conversation_id: conversation.id,
       ...(tags.acpserver ? { agent: tags.acpserver } : {}),
-      ...(workingDir ? { working_dir: workingDir } : {}),
+      ...(workingDir
+        ? { working_dir: workingDir, folder: workingDir, workspace }
+        : {}),
+      ...(scope ? { scope } : {}),
       ...(project ? { project } : {}),
       updated_at: conversation.updated_at,
     },
@@ -95,9 +143,16 @@ export function loadState(path) {
       conversations: data.conversations ?? {},
       repos: data.repos ?? {},
       docs: data.docs ?? {},
+      whereBackfilled: Boolean(data.whereBackfilled),
     };
   } catch {
-    return { initialized: false, conversations: {}, repos: {}, docs: {} };
+    return {
+      initialized: false,
+      conversations: {},
+      repos: {},
+      docs: {},
+      whereBackfilled: false,
+    };
   }
 }
 

@@ -154,23 +154,106 @@ export function reviewAnswer(response, { coding = true } = {}) {
 }
 
 /** The note every new agent gets: the quality bar and the learned rules. */
-export function buildQualityNote(guardrails = []) {
+/**
+ * The team's working rules, one line each: the quality bar, the memory
+ * protocol (memory separated per topic, workspace and folder) and the rules
+ * learned from feedback.
+ */
+export function buildTeamProtocol(guardrails = []) {
   const lines = [
     "Quality bar (the team runs a feedback loop on every answer):",
     "- Use the code-quality-gate skill when you change code: run the project's own lint, type check and tests for what you changed, add a test for each behavior change, keep the diff small, and follow change-safety-guard.",
     "- Finish your final answer with one line `VERIFICACIÓN: <commands you ran and their results>` (or why you couldn't verify). Never claim a check you did not run.",
     "- Never print secrets or tokens in your answer.",
-    "Team memory (always on: the qdrant_memory and knowledge MCP servers):",
-    "- Start: `qdrant-find` with the task and the project name (past decisions, lessons, docs, earlier conversations), and `graph_report` on the working folder before you explore unfamiliar code (`graph_explain` / `graph_path` for details).",
+    "Team memory (always on: the qdrant_memory and knowledge MCP servers). It is separated per chat topic, workspace (repository) and folder: always pass `path` = your working folder, and `scope` when your task names one, to memory_search, memory_ingest and memory_learn.",
+    "- Start: `memory_search` with the task (past decisions, lessons, docs, earlier conversations of this topic and workspace; use it instead of qdrant-find, which mixes every project), and `graph_report` on the working folder before you explore unfamiliar code (`graph_explain` / `graph_path` for details).",
     "- During: when the user hands you data (a doc, a folder, a URL) to know about, `memory_ingest` it.",
-    "- End: `memory_learn` 1 to 3 durable lessons a teammate would need next time (a decision and its why, a gotcha, a fix that worked, a convention), with the project. Not trivia, never secrets.",
+    "- End: `memory_learn` 1 to 3 durable lessons a teammate would need next time in this workspace (a decision and its why, a gotcha, a fix that worked, a convention). Not trivia, never secrets.",
   ];
   if (guardrails.length) {
     lines.push("Rules learned from past feedback (follow them):");
     for (const rule of guardrails.slice(0, MAX_GUARDRAILS))
       lines.push(`- ${rule}`);
   }
-  return `${lines.join("\n")}\n\n`;
+  return lines.join("\n");
+}
+
+/** The line that tells an agent where its memory lives. */
+export function buildWhereNote(where) {
+  if (!where?.folder) return "";
+  return `Your team-memory place: path=${where.folder}${where.scope ? ` scope=${where.scope}` : ""}. Pass them to memory_search, memory_learn and memory_ingest so this topic's memory stays separate from other chats and projects.\n`;
+}
+
+/**
+ * The note put before a task. With `alwaysOn` the protocol is already in
+ * every agent's permanent context (installAlwaysOn), so only the memory
+ * place is added.
+ */
+export function buildQualityNote(
+  guardrails = [],
+  { where = null, alwaysOn = false } = {},
+) {
+  const place = buildWhereNote(where);
+  if (alwaysOn) return place ? `${place}\n` : "";
+  return `${buildTeamProtocol(guardrails)}\n${place}\n`;
+}
+
+export const ALWAYS_ON_NAME = "team-memory";
+const CLAUDE_BLOCK_START = "<!-- >>> agent-canvas team-memory (managed) -->";
+const CLAUDE_BLOCK_END = "<!-- <<< agent-canvas team-memory -->";
+
+/**
+ * OpenHands loads a plain `.md` without triggers in ~/.agents/skills as
+ * permanent context of every agent, including the ones opened from the
+ * OpenHands UI. Claude Code (ACP) reads its user CLAUDE.md, where the same
+ * text goes in a managed block. Returns the paths written.
+ */
+export function installAlwaysOn(
+  guardrails = [],
+  { skillDirs = [], claudeFiles = [] } = {},
+) {
+  const protocol = buildTeamProtocol(guardrails);
+  const written = [];
+  const skill = `---\nname: ${ALWAYS_ON_NAME}\n---\n\n# Team memory and quality bar\n\n${protocol}\n`;
+  for (const dir of skillDirs) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, `${ALWAYS_ON_NAME}.md`);
+      writeFileSync(path, skill);
+      written.push(path);
+    } catch {
+      // a missing or read-only folder is not fatal
+    }
+  }
+  const block = `${CLAUDE_BLOCK_START}\n# Team memory and quality bar\n\n${protocol}\n${CLAUDE_BLOCK_END}`;
+  for (const path of claudeFiles) {
+    try {
+      const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+      const start = current.indexOf(CLAUDE_BLOCK_START);
+      const end = current.indexOf(CLAUDE_BLOCK_END);
+      const next =
+        start >= 0 && end > start
+          ? `${current.slice(0, start)}${block}${current.slice(end + CLAUDE_BLOCK_END.length)}`
+          : `${current.trimEnd()}${current.trim() ? "\n\n" : ""}${block}\n`;
+      if (next !== current) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, next);
+      }
+      written.push(path);
+    } catch {
+      // idem
+    }
+  }
+  return written;
+}
+
+/** The default places: ~/.agents/skills and Claude Code's CLAUDE.md. */
+export function alwaysOnTargets(env = process.env, home = env.HOME ?? "") {
+  const claudeDir = env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude");
+  return {
+    skillDirs: [join(home, ".agents/skills")],
+    claudeFiles: [join(claudeDir, "CLAUDE.md")],
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -193,6 +193,61 @@ export function projectDocs(repo, max = 120) {
   return [...new Set(picks)].slice(0, max);
 }
 
+// ---------------------------------------------------------------------------
+// Where a note belongs: chat/topic, workspace and folder
+// ---------------------------------------------------------------------------
+
+/**
+ * The place a note belongs to, so each topic, workspace and folder keeps its
+ * own memory. `scope` is the chat or forum topic ("-100…" or "-100…:7"),
+ * `folder` the working folder; `workspace` is its repository root (or the
+ * folder itself when it is not a repository).
+ */
+export function memoryWhere({ scope = null, folder = null } = {}) {
+  const dir = folder ? resolve(String(folder)) : null;
+  return {
+    scope: scope ? String(scope) : null,
+    workspace: dir ? (findRepoRoot(dir) ?? dir) : null,
+    folder: dir,
+  };
+}
+
+function scopeFields(where) {
+  if (!where) return {};
+  const fields = {};
+  for (const key of ["scope", "workspace", "folder"])
+    if (where[key]) fields[key] = where[key];
+  return fields;
+}
+
+export const MEMORY_LEVELS = ["tema", "carpeta", "workspace", "todo"];
+
+/**
+ * Qdrant filter for a search at one level:
+ * - tema: this workspace, and notes of this chat/topic or shared by the
+ *   workspace (project docs, notes without a chat);
+ * - carpeta: notes of this exact folder;
+ * - workspace: everything of this repository;
+ * - todo: no filter.
+ * Without a workspace there is nothing to separate by, so it's unfiltered.
+ */
+export function memoryFilter(where, level = "tema") {
+  const { scope, workspace, folder } = where ?? {};
+  if (level === "todo" || !workspace) return null;
+  if (level === "carpeta" && folder)
+    return { must: [{ key: "metadata.folder", match: { value: folder } }] };
+  const must = [{ key: "metadata.workspace", match: { value: workspace } }];
+  if (level === "tema" && scope)
+    return {
+      must,
+      should: [
+        { key: "metadata.scope", match: { value: scope } },
+        { is_empty: { key: "metadata.scope" } },
+      ],
+    };
+  return { must };
+}
+
 /**
  * Notes for one source: [{document, metadata}], one per chunk. The first
  * line of each chunk names the source so search results are self-explaining.
@@ -204,6 +259,7 @@ export function buildChunkNotes({
   project = null,
   kind = "document",
   tags = [],
+  where = null,
 }) {
   const chunks = chunkText(text);
   const hash = sha(text);
@@ -218,6 +274,7 @@ export function buildChunkNotes({
       chunks: chunks.length,
       hash,
       tags,
+      ...scopeFields(where),
       source_kind: "ingest",
       ingested_at: new Date().toISOString(),
     },
@@ -231,8 +288,10 @@ export function buildLessonNote({
   agent = null,
   origin = "feedback",
   evidence = "",
+  where = null,
 }) {
   const text = String(lesson ?? "").trim();
+  const fields = scopeFields(where);
   return {
     document: `[lesson${project ? ` · ${project}` : ""}] ${text}${evidence ? `\nEvidence: ${String(evidence).slice(0, 400)}` : ""}`,
     metadata: {
@@ -240,7 +299,9 @@ export function buildLessonNote({
       origin,
       project,
       agent,
-      source: `lesson:${sha(text)}`,
+      ...fields,
+      // Per workspace and topic: the same lesson elsewhere is its own note.
+      source: `lesson:${sha(`${fields.workspace ?? ""}|${fields.scope ?? ""}|${text}`)}`,
       source_kind: "learning",
       learned_at: new Date().toISOString(),
     },
@@ -289,14 +350,42 @@ export class QdrantRest {
   }
 
   /** Counts per metadata.type (conversation-summary, document, lesson…). */
-  async countByType(types) {
+  async countByType(types, filter = null) {
     const counts = {};
     for (const type of types) {
       counts[type] = await this.count({
-        must: [{ key: "metadata.type", match: { value: type } }],
+        ...(filter ?? {}),
+        must: [
+          ...(filter?.must ?? []),
+          { key: "metadata.type", match: { value: type } },
+        ],
       }).catch(() => 0);
     }
     return counts;
+  }
+
+  /** One page of points (payload only): {points, next}. */
+  async scroll({ filter = null, limit = 100, offset = null } = {}) {
+    const result = await this.call("POST", "/points/scroll", {
+      limit,
+      with_payload: true,
+      with_vector: false,
+      ...(filter ? { filter } : {}),
+      ...(offset !== null ? { offset } : {}),
+    });
+    return {
+      points: result?.points ?? [],
+      next: result?.next_page_offset ?? null,
+    };
+  }
+
+  /** Merges fields into metadata of the given points. */
+  setMetadata(ids, fields) {
+    return this.call("POST", "/points/payload?wait=true", {
+      payload: fields,
+      key: "metadata",
+      points: ids,
+    });
   }
 }
 
@@ -393,6 +482,8 @@ export async function ingestSource(
     tags = [],
     fetchImpl = fetch,
     allowedRoots = [],
+    scope = null,
+    folder = null,
   },
 ) {
   const result = { sources: 0, chunks: 0, skipped: [] };
@@ -406,6 +497,7 @@ export async function ingestSource(
       project,
       kind: "web",
       tags,
+      where: memoryWhere({ scope, folder }),
     });
     result.chunks += await storeNotes(notes, { store, rest });
     result.sources += 1;
@@ -441,6 +533,8 @@ export async function ingestSource(
       project,
       kind: "document",
       tags,
+      // A file belongs to its own folder unless the caller names one.
+      where: memoryWhere({ scope, folder: folder ?? dirname(file) }),
     });
     result.chunks += await storeNotes(notes, { store, rest });
     result.sources += 1;

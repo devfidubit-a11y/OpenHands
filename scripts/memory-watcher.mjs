@@ -8,6 +8,10 @@
  * 3. Project docs: README, AGENTS.md, docs/, wiki/ and the graphify report
  *    of every repository are kept in memory (re-ingested when they change),
  *    so agents find the project's knowledge with qdrant-find.
+ * Every note records its workspace (repo root), folder and, for Telegram,
+ * its chat/topic, so memory_search keeps them apart; notes from before that
+ * are backfilled once at startup. The team protocol (agent-quality-lib
+ * installAlwaysOn) is installed for every agent, OpenHands UI included.
  * 2. Graphify on commit: install graphify's git hooks in every repository
  *    under the projects folder, so each commit re-indexes the code graph
  *    (code only, no LLM), and build the first graph when there is none.
@@ -28,12 +32,19 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 import {
+  QualityStore,
+  alwaysOnTargets,
+  installAlwaysOn,
+} from "./agent-quality-lib.mjs";
+import {
   QdrantRest,
   buildChunkNotes,
+  memoryWhere,
   projectDocs,
   readSourceFile,
   sha,
@@ -43,6 +54,7 @@ import { buildMemoryMcpServer } from "./register-memory-mcp.mjs";
 import {
   buildConversationNote,
   findGitRepos,
+  inferWhere,
   keepGraphifyLocal,
   loadState,
   McpStdioClient,
@@ -239,6 +251,8 @@ async function ingestProjectDocs() {
         title: `${basename(repo)}/${relative(repo, file)}`,
         project: basename(repo),
         kind: "project-doc",
+        // Shared by the whole workspace (no chat/topic).
+        where: memoryWhere({ folder: repo }),
       });
       try {
         const client = await memoryClient();
@@ -256,6 +270,46 @@ async function ingestProjectDocs() {
   }
   if (stored) log(`ingested ${stored} project-doc chunk(s)`);
   saveState(statePath, state);
+}
+
+/** Gives old notes (no metadata.workspace) their workspace and folder. */
+async function backfillWhere() {
+  if (!rest || state.whereBackfilled) return;
+  const repos = [
+    ...new Set(projectsDirs.flatMap((dir) => findGitRepos(dir, 3))),
+  ];
+  let offset = null;
+  let fixed = 0;
+  do {
+    const page = await rest.scroll({
+      filter: { must: [{ is_empty: { key: "metadata.workspace" } }] },
+      limit: 100,
+      offset,
+    });
+    for (const point of page.points) {
+      const where = inferWhere(point.payload?.metadata, repos);
+      if (!where) continue;
+      await rest.setMetadata([point.id], where);
+      fixed += 1;
+    }
+    offset = page.next;
+  } while (offset !== null);
+  state.whereBackfilled = true;
+  saveState(statePath, state);
+  if (fixed) log(`gave ${fixed} older note(s) their workspace and folder`);
+}
+
+/** The team protocol + learned rules in every agent's permanent context. */
+function installTeamProtocol() {
+  if (env.MEMORY_ALWAYS_ON === "false") return;
+  const learningDir =
+    env.AGENT_LEARNING_DIR?.trim() ||
+    join(dirname(statePath), "agent-learning");
+  const written = installAlwaysOn(
+    new QualityStore(learningDir).guardrails(),
+    alwaysOnTargets(env, homedir()),
+  );
+  if (written.length) log(`team protocol always on in ${written.join(", ")}`);
 }
 
 function every(ms, fn, name) {
@@ -282,6 +336,8 @@ if (!summariesOn && !hooksOn && !docsOn) {
 log(
   `summaries ${summariesOn ? "on" : "off"}, project docs ${docsOn ? "on" : "off"}, graphify hooks ${hooksOn ? `on (${projectsDirs.join(", ")})` : "off"}`,
 );
+installTeamProtocol();
+backfillWhere().catch((err) => log(`backfill: ${err.message}`));
 if (summariesOn) every(pollMs, pollConversations, "conversation poll");
 if (hooksOn) every(scanMs, scanRepos, "repository scan");
 if (docsOn) every(ingestMs, ingestProjectDocs, "project-doc ingestion");

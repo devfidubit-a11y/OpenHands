@@ -16,6 +16,7 @@ import {
   checkCase,
   feedbackStats,
   formatScoreboard,
+  installAlwaysOn,
   installLearnedSkills,
   lintSkill,
   parseEvalLines,
@@ -75,6 +76,38 @@ describe("reviewAnswer", () => {
     expect(review.text).not.toContain("ghp_");
     expect(review.text).toContain("[secreto oculto]");
     expect(review.reasons).toEqual(["secret in answer", "risky: force-push"]);
+  });
+});
+
+describe("always-on team protocol", () => {
+  it("installs a permanent OpenHands skill and a managed CLAUDE.md block", () => {
+    const skills = tempDir();
+    const claude = join(tempDir(), "CLAUDE.md");
+    writeFileSync(claude, "# graphify\n- my own notes\n");
+    installAlwaysOn(["Run the tests."], {
+      skillDirs: [skills],
+      claudeFiles: [claude],
+    });
+    const skill = readFileSync(join(skills, "team-memory.md"), "utf8");
+    expect(skill).toMatch(/^---\nname: team-memory\n---/);
+    expect(skill).not.toContain("triggers");
+    expect(skill).toContain("memory_search");
+    expect(skill).toContain("- Run the tests.");
+
+    installAlwaysOn(["Keep diffs small."], { claudeFiles: [claude] });
+    const md = readFileSync(claude, "utf8");
+    expect(md.startsWith("# graphify\n- my own notes\n")).toBe(true);
+    expect(md.match(/agent-canvas team-memory \(managed\)/g)).toHaveLength(1);
+    expect(md).toContain("- Keep diffs small.");
+    expect(md).not.toContain("- Run the tests.");
+  });
+
+  it("only adds the memory place to a task when the protocol is always on", () => {
+    const where = { scope: "-100:7", workspace: "/w", folder: "/w/web" };
+    const note = buildQualityNote(["x"], { where, alwaysOn: true });
+    expect(note).toContain("path=/w/web scope=-100:7");
+    expect(note).not.toContain("Quality bar");
+    expect(buildQualityNote(["x"], { where })).toContain("Quality bar");
   });
 });
 

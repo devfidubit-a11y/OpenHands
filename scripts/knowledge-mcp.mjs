@@ -4,8 +4,9 @@
  * and data ingestion into the shared Qdrant memory (docs/MEMORY.md).
  *
  * Tools: graph_report, graph_explain, graph_path, graph_update,
- * memory_ingest, memory_learn, memory_status. Searching and saving notes stay
- * with the qdrant_memory server (qdrant-find / qdrant-store).
+ * memory_search, memory_ingest, memory_learn, memory_status. Every note
+ * records its chat/topic (`scope`), workspace (repo root) and folder, and
+ * memory_search only looks inside them, so topics and projects stay apart.
  *
  * Env: QDRANT_URL, MEMORY_COLLECTION, MEMORY_EMBEDDING_MODEL,
  * FASTEMBED_CACHE_PATH, KNOWLEDGE_ROOTS (folders memory_ingest may read,
@@ -15,11 +16,14 @@
 import { pathToFileURL } from "node:url";
 
 import {
+  MEMORY_LEVELS,
   QdrantRest,
   buildLessonNote,
   findRepoRoot,
   graphReport,
   ingestSource,
+  memoryFilter,
+  memoryWhere,
   runGraphify,
   storeNotes,
 } from "./knowledge-lib.mjs";
@@ -77,6 +81,29 @@ export const KNOWLEDGE_TOOLS = [
     },
   },
   {
+    name: "memory_search",
+    description:
+      "Search the team memory of YOUR topic, workspace and folder (past decisions, lessons, docs, earlier conversations). Use it instead of qdrant-find: it never mixes other projects or chats in. level: tema (default: this chat/topic plus what this workspace shares), carpeta (this folder only), workspace (the whole repository), todo (everything, only when asked).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        path: {
+          type: "string",
+          description:
+            "Your working folder (absolute). Sets the workspace and folder the note belongs to.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Your chat/topic memory scope, when the task gave you one",
+        },
+        level: { type: "string", enum: MEMORY_LEVELS },
+      },
+      required: ["query", "path"],
+    },
+  },
+  {
     name: "memory_ingest",
     description:
       "Ingest data into the shared team memory: a file, a folder (text, docs and code; secrets and build output are skipped) or a public URL. Chunks are searchable with qdrant-find. Re-ingesting a source replaces it.",
@@ -85,6 +112,16 @@ export const KNOWLEDGE_TOOLS = [
       properties: {
         source: { type: "string", description: "Absolute path or https URL" },
         project: { type: "string" },
+        path: {
+          type: "string",
+          description:
+            "Your working folder (absolute). Sets the workspace and folder the note belongs to.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Your chat/topic memory scope, when the task gave you one",
+        },
         tags: { type: "array", items: { type: "string" } },
       },
       required: ["source"],
@@ -99,6 +136,16 @@ export const KNOWLEDGE_TOOLS = [
       properties: {
         lesson: { type: "string" },
         project: { type: "string" },
+        path: {
+          type: "string",
+          description:
+            "Your working folder (absolute). Sets the workspace and folder the note belongs to.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Your chat/topic memory scope, when the task gave you one",
+        },
         evidence: {
           type: "string",
           description: "path:line, PR, command output",
@@ -110,8 +157,11 @@ export const KNOWLEDGE_TOOLS = [
   {
     name: "memory_status",
     description:
-      "How much the team memory holds, per kind (summaries, documents, web pages, lessons).",
-    inputSchema: { type: "object", properties: {} },
+      "How much the team memory holds, per kind (summaries, documents, web pages, lessons); with path, only for that workspace.",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string" } },
+    },
   },
 ];
 
@@ -194,7 +244,41 @@ export function createKnowledgeHandlers(
           : `graphify update falló: ${result.output.slice(-800)}`,
       );
     },
-    async memory_ingest({ source, project = null, tags = [] }) {
+    async memory_search({ query, path, scope = null, level = "tema" }) {
+      if (!String(query ?? "").trim()) throw new Error("query is empty");
+      if (!MEMORY_LEVELS.includes(level))
+        throw new Error(`level must be one of ${MEMORY_LEVELS.join(", ")}`);
+      const where = memoryWhere({ scope, folder: path });
+      const filter = memoryFilter(where, level);
+      const result = await (
+        await memory()
+      ).callTool("qdrant-find", {
+        query: String(query),
+        ...(filter ? { query_filter: filter } : {}),
+      });
+      const found = (result?.content ?? [])
+        .map((item) => item.text)
+        .join("\n")
+        .trim();
+      const place =
+        level === "todo" || !where.workspace
+          ? "toda la memoria"
+          : level === "carpeta"
+            ? where.folder
+            : `${where.workspace}${level === "tema" && where.scope ? ` · tema ${where.scope}` : ""}`;
+      return text(
+        found && !/^No information found/i.test(found)
+          ? `Memoria (${place}):\n${found}`
+          : `Nada en la memoria de ${place}.`,
+      );
+    },
+    async memory_ingest({
+      source,
+      project = null,
+      tags = [],
+      path = null,
+      scope = null,
+    }) {
       if (!env.QDRANT_URL)
         throw new Error("la memoria (QDRANT_URL) no está configurada");
       const result = await ingestSource(source, {
@@ -202,36 +286,49 @@ export function createKnowledgeHandlers(
         rest: restClient,
         project,
         tags,
+        scope,
+        folder: path,
         allowedRoots: /^https?:/i.test(source) ? [] : roots,
       });
       return text(
         `Ingerido: ${result.sources} fuente(s), ${result.chunks} fragmento(s)${result.skipped.length ? `; omitidos ${result.skipped.length} (binarios, secretos o vacíos)` : ""}. Búscalo con qdrant-find.`,
       );
     },
-    async memory_learn({ lesson, project = null, evidence = "" }) {
+    async memory_learn({
+      lesson,
+      project = null,
+      evidence = "",
+      path = null,
+      scope = null,
+    }) {
       if (!String(lesson ?? "").trim()) throw new Error("lesson is empty");
       const note = buildLessonNote({
         lesson,
         project,
         evidence,
         origin: "agent",
+        where: memoryWhere({ scope, folder: path }),
       });
       await storeNotes([note], { store, rest: restClient });
-      return text("Lección guardada para todo el equipo.");
+      return text(
+        "Lección guardada en la memoria de este workspace (y tema, si lo diste).",
+      );
     },
-    async memory_status() {
+    async memory_status({ path = null } = {}) {
       if (!restClient)
         return text("La memoria (QDRANT_URL) no está configurada.");
-      const counts = await restClient.countByType([
-        "conversation-summary",
-        "document",
-        "web",
-        "lesson",
-        "project-doc",
-      ]);
-      const total = await restClient.count();
+      const filter = path
+        ? memoryFilter(memoryWhere({ folder: path }), "workspace")
+        : null;
+      const counts = await restClient.countByType(
+        ["conversation-summary", "document", "web", "lesson", "project-doc"],
+        filter,
+      );
+      const total = await restClient.count(filter);
       return text(
-        `Memoria: ${total} notas. ${Object.entries(counts)
+        `Memoria${filter ? ` de ${filter.must[0].match.value}` : ""}: ${total} notas. ${Object.entries(
+          counts,
+        )
           .map(([key, value]) => `${key}: ${value}`)
           .join(", ")}.`,
       );

@@ -50,16 +50,58 @@ docker run --rm -v agent-canvas_qdrant-data:/d -v $PWD:/b alpine tar czf /b/qdra
 
 ### Always connected
 
-Every new agent gets a memory protocol in its instructions:
+Every agent gets a memory protocol and the rules learned from feedback. This
+includes agents started from Telegram, agents opened in the OpenHands UI, and
+Claude Code (ACP) agents. The protocol is installed in two places:
 
-1. **At the start**, it runs `qdrant-find` on the task and the project, and
-   reads the code graph with `graph_report`.
+- `~/.agents/skills/team-memory.md`. OpenHands loads a plain `.md` without
+  triggers as permanent context.
+- A managed block in `$CLAUDE_CONFIG_DIR/CLAUDE.md`. The rest of that file is
+  left as it is.
+
+The bridge rewrites both when a rule is added or removed. The memory watcher
+installs them at startup, even without Telegram.
+
+The protocol has three steps:
+
+1. **At the start**, the agent runs `memory_search` on the task and reads the
+   code graph with `graph_report`.
 2. **While working**, it runs `memory_ingest` on any data you hand it.
 3. **At the end**, it saves 1 to 3 durable lessons with `memory_learn`.
 
 At startup the container keeps `qdrant_memory` and `knowledge` enabled. An
 entry that was disabled in Settings → MCP is switched back on. Set
 `MEMORY_ALWAYS_ON=false` to keep a "disabled" choice.
+
+### Separated memory: topic, workspace, folder
+
+Every note records where it belongs:
+
+| Field | Value |
+| --- | --- |
+| `metadata.scope` | The Telegram chat or forum topic (`-100…` or `-100…:7`). Empty for notes shared by the whole workspace, such as project docs and OpenHands UI conversations. |
+| `metadata.workspace` | The repository root of the working folder, or the folder itself when it isn't a repository. |
+| `metadata.folder` | The working folder. |
+
+`memory_search` (and `/memoria buscar`) looks at one level:
+
+| Level | What it searches |
+| --- | --- |
+| `tema` (default) | This workspace: the notes of this chat or topic, plus what the workspace shares. Other topics are never mixed in. |
+| `carpeta` | This folder only. |
+| `workspace` | The whole repository, across topics. |
+| `todo` | Everything. Use it only when asked. |
+
+Agents pass `path` (their working folder) and `scope` (given in the task by
+the bridge) to `memory_search`, `memory_learn` and `memory_ingest`. Plain
+`qdrant-find` still works, and it now accepts a `query_filter`
+(`QDRANT_ALLOW_ARBITRARY_FILTER`), but without a filter it searches every
+project.
+
+Notes stored before this change are placed once at startup. The watcher
+works out each note's workspace from its working dir, its source path or its
+project name. Guardrails and skills stay global, because they are quality
+rules.
 
 ### The `knowledge` MCP server
 
@@ -72,9 +114,10 @@ entry that was disabled in Settings → MCP is switched back on. Set
 | `graph_explain` | Explains one node and its neighbors. |
 | `graph_path` | Shows how A reaches B in the code graph. |
 | `graph_update` | Re-indexes the code graph (code only, no LLM). |
-| `memory_ingest` | Ingests a file, a folder or a public URL. Re-ingesting a source replaces its old chunks. |
-| `memory_learn` | Saves a lesson for the whole team. |
-| `memory_status` | Counts the notes per kind. |
+| `memory_search` | Searches the memory of this topic, workspace or folder (see above). |
+| `memory_ingest` | Ingests a file, a folder or a public URL into the caller's workspace. Re-ingesting a source replaces its old chunks. |
+| `memory_learn` | Saves a lesson for this workspace and topic. |
+| `memory_status` | Counts the notes per kind, for one workspace when given a `path`. |
 
 `memory_ingest` follows these rules:
 
@@ -100,10 +143,14 @@ entry that was disabled in Settings → MCP is switched back on. Set
   - A file sent to the chat (md, txt, csv, json, code, html; up to 20 MB) is
     saved and ingested. If it has a caption, the caption goes to
     @coordinador.
-  - `/memoria` shows what the memory holds. `/memoria buscar <q>` searches it,
-    and `/memoria aprende <lesson>` adds a lesson.
+  - `/memoria` shows what this topic's memory holds.
+    `/memoria buscar [tema|carpeta|workspace|todo] <q>` searches it, and
+    `/memoria aprende <lesson>` adds a lesson to it.
+  - Everything sent in a chat or topic is stored with that topic and its
+    working folder.
 - **Lessons from the feedback loop.** These are saved automatically as
-  `type: lesson`, so later agents recall them with `qdrant-find`:
+  `type: lesson`, in the topic and workspace where they happened, so later
+  agents there recall them with `memory_search`:
   - 👎 notes
   - fixes the judge suggests for failed evals
   - every applied mechanism
