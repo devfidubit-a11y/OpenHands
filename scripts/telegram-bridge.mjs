@@ -1536,9 +1536,10 @@ async function relayAgentMessages(chatId, from, response) {
 /** Polls tracked agents and posts results, errors and confirmation requests. */
 async function watchAgents() {
   for (const [chatId, chat] of Object.entries(state.chats)) {
-    for (const agent of chat.agents) {
+    for (const agent of [...chat.agents]) {
       try {
         const info = await server.getConversation(agent.id);
+        delete agent.missing;
         const next = info?.execution_status;
         const event = statusTransition(agent.lastStatus, next);
         if (next === "running") {
@@ -1590,7 +1591,15 @@ async function watchAgents() {
           );
         }
       } catch (error) {
-        log("watch failed for", agent.name, error.message);
+        // A deleted conversation answers 404 forever: stop tracking it.
+        if (
+          /HTTP 404/.test(error.message) &&
+          (agent.missing = (agent.missing ?? 0) + 1) >= 3
+        ) {
+          chat.agents = chat.agents.filter((item) => item !== agent);
+          log("dropped agent with a deleted conversation:", agent.name);
+          save();
+        } else log("watch failed for", agent.name, error.message);
       }
     }
     for (const lead of chat.agents.filter((item) => item.role === "lead")) {
