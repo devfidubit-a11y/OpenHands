@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import re
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+UTC = timezone.utc  # datetime.UTC needs Python 3.11; keep 3.9+ working
 
 
 MINIMUM_AGE = timedelta(days=7)

@@ -35,7 +35,8 @@ function resolveStaticServerArgs(allowLanSessionKey: string | undefined): {
     "PORT=8000",
     "log() { printf '%s\\n' \"$*\" >&2; }",
     sessionKeyPolicyBlock(),
-    "printf '%s\\n' \"${STATIC_SERVER_SESSION_KEY_ARGS[@]}\"",
+    // `${A[@]+"${A[@]}"}`: macOS bash 3.2 treats an empty array as unbound under `set -u`.
+    "printf '%s\\n' ${STATIC_SERVER_SESSION_KEY_ARGS[@]+\"${STATIC_SERVER_SESSION_KEY_ARGS[@]}\"}",
   ].join("\n");
   const env: Record<string, string> = { PATH: process.env.PATH ?? "" };
   if (allowLanSessionKey !== undefined) {
