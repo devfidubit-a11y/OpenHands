@@ -52,11 +52,26 @@ describe("registerMemoryMcp", () => {
     });
   });
 
-  it("leaves an existing entry alone, even a disabled one", async () => {
+  it("keeps memory always on: a disabled entry is enabled again", async () => {
     const calls = mockServer({ qdrant_memory: { enabled: false } });
 
-    expect(await registerMemoryMcp(env, () => {})).toBe("exists");
-    expect(calls.some((c) => c.init?.method === "POST")).toBe(false);
+    expect(await registerMemoryMcp(env, () => {})).toBe("enabled");
+    expect(calls.some((c) => c.init?.method === "PATCH")).toBe(true);
+  });
+
+  it("leaves a disabled entry alone with MEMORY_ALWAYS_ON=false", async () => {
+    const calls = mockServer({ qdrant_memory: { enabled: false } });
+
+    expect(
+      await registerMemoryMcp({ ...env, MEMORY_ALWAYS_ON: "false" }, () => {}),
+    ).toBe("exists");
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes("qdrant_memory") &&
+          ["POST", "PATCH"].includes(c.init?.method ?? ""),
+      ),
+    ).toBe(false);
   });
 
   it("does nothing without QDRANT_URL", async () => {

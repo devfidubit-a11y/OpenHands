@@ -48,6 +48,75 @@ Back up memory with the other volumes:
 docker run --rm -v agent-canvas_qdrant-data:/d -v $PWD:/b alpine tar czf /b/qdrant.tgz -C /d .
 ```
 
+### Always connected
+
+Every new agent gets a memory protocol in its instructions:
+
+1. **At the start**, it runs `qdrant-find` on the task and the project, and
+   reads the code graph with `graph_report`.
+2. **While working**, it runs `memory_ingest` on any data you hand it.
+3. **At the end**, it saves 1 to 3 durable lessons with `memory_learn`.
+
+At startup the container keeps `qdrant_memory` and `knowledge` enabled. An
+entry that was disabled in Settings → MCP is switched back on. Set
+`MEMORY_ALWAYS_ON=false` to keep a "disabled" choice.
+
+### The `knowledge` MCP server
+
+`scripts/knowledge-mcp.mjs` is registered for all agents next to
+`qdrant_memory`, and uses the same Qdrant collection and embeddings.
+
+| Tool | What it does |
+| --- | --- |
+| `graph_report` | Returns the project's graphify report, and builds the graph first if it's missing. |
+| `graph_explain` | Explains one node and its neighbors. |
+| `graph_path` | Shows how A reaches B in the code graph. |
+| `graph_update` | Re-indexes the code graph (code only, no LLM). |
+| `memory_ingest` | Ingests a file, a folder or a public URL. Re-ingesting a source replaces its old chunks. |
+| `memory_learn` | Saves a lesson for the whole team. |
+| `memory_status` | Counts the notes per kind. |
+
+`memory_ingest` follows these rules:
+
+- It only reads files under `KNOWLEDGE_ROOTS` (default
+  `/projects,/documents,/workspace`).
+- It skips `.env`, key and credential files, binaries and build output.
+- It only fetches public http(s) URLs. Loopback and private addresses are
+  refused.
+
+### Data ingestion
+
+- **Project docs, continuously.** The watcher keeps these files of every
+  repository in memory, and re-ingests a file when it changes:
+  - README, AGENTS.md, CLAUDE.md, CONTRIBUTING, ARCHITECTURE and CHANGELOG
+  - `docs/`, `wiki/` and `adr/`
+  - the graphify report
+
+  These notes have `type: project-doc`. Turn it off with
+  `MEMORY_INGEST_DOCS=false`.
+- **Telegram:**
+  - `/ingest <path | folder | URL>` ingests the source. For a repository it
+    also refreshes the code graph.
+  - A file sent to the chat (md, txt, csv, json, code, html; up to 20 MB) is
+    saved and ingested. If it has a caption, the caption goes to
+    @coordinador.
+  - `/memoria` shows what the memory holds. `/memoria buscar <q>` searches it,
+    and `/memoria aprende <lesson>` adds a lesson.
+- **Lessons from the feedback loop.** These are saved automatically as
+  `type: lesson`, so later agents recall them with `qdrant-find`:
+  - 👎 notes
+  - fixes the judge suggests for failed evals
+  - every applied mechanism
+
+### Self-improvement
+
+`/mejora auto on` is the default. After an eval run with failures, @curador
+starts on its own, at most once a day. Proposed guardrail rules and eval cases
+that pass validation are applied right away and announced in the chat; undo
+one with `/mejora quitar`. New skills always wait for a human ✅.
+`/mejora auto off` makes every proposal wait for approval. See
+[FEEDBACK-LOOP.md](FEEDBACK-LOOP.md).
+
 ## Code graph: Graphify
 
 [Graphify](https://github.com/Graphify-Labs/graphify) is installed in the image,

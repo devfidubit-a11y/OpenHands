@@ -788,6 +788,16 @@ export class TelegramClient {
     this.fetch = fetchImpl;
   }
 
+  /** Downloads a file sent to the bot (Bot API limit: 20 MB). */
+  async downloadFile(fileId) {
+    const file = await this.call("getFile", { file_id: fileId });
+    if (!file?.file_path) throw new Error("Telegram no devolvió el archivo");
+    const url = `${this.base.replace(/\/bot([^/]+)$/, "/file/bot$1")}/${file.file_path}`;
+    const response = await this.fetch(url);
+    if (!response.ok) throw new Error(`descarga: HTTP ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
   async call(method, params) {
     const response = await this.fetch(`${this.base}/${method}`, {
       method: "POST",

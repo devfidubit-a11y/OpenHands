@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -41,6 +41,19 @@ import {
   uninstallSkill,
   validateProposal,
 } from "./agent-quality-lib.mjs";
+import {
+  QdrantRest,
+  buildChunkNotes,
+  buildLessonNote,
+  findRepoRoot,
+  ingestSource,
+  ingestible,
+  readSourceFile,
+  runGraphify,
+  storeNotes,
+} from "./knowledge-lib.mjs";
+import { McpStdioClient } from "./memory-watcher-lib.mjs";
+import { buildMemoryMcpServer } from "./register-memory-mcp.mjs";
 
 import {
   AgentServerClient,
@@ -162,6 +175,11 @@ Calidad y aprendizaje (feedback loop):
 /evals skills — revisa que las skills estén bien escritas · /evals historial
 /mejora [enfoque] — @curador convierte el feedback y los evals en nuevas skills, reglas (guardrails) o casos; tú apruebas cada una
 /mejora lista — lo aprendido · /mejora quitar regla <n> | skill <nombre> | eval <id>
+Memoria del equipo (Qdrant + grafo graphify, siempre conectada a todos los agentes):
+/memoria — qué sabe el equipo · /memoria buscar <q> · /memoria aprende <lección>
+/ingest <ruta | carpeta | URL> — ingiere datos en la memoria (y actualiza el grafo del repo)
+(manda un archivo al chat) — lo guardo en la memoria; si pones un texto, se lo paso a @coordinador
+/mejora auto on|off — automejora: aplica sola las reglas y casos validados (las skills siempre las apruebas tú)
 Cada respuesta pasa un control: oculta secretos, avisa de comandos de riesgo y de cambios de código sin VERIFICACIÓN.
 
 Bots y tareas programadas:
@@ -203,6 +221,8 @@ const COMMANDS = [
   ["feedback", "Valoraciones de los agentes"],
   ["evals", "Evaluar a los agentes (@juez)"],
   ["mejora", "Aprender del feedback: skills, reglas y evals"],
+  ["ingest", "Ingerir datos en la memoria (ruta o URL)"],
+  ["memoria", "Memoria del equipo: estado y búsqueda"],
   ["bots", "Plantillas de bots"],
   ["bot", "Activar un bot programado"],
   ["schedule", "Tareas programadas"],
@@ -221,6 +241,9 @@ const KNOWN_COMMANDS = new Set([
   "foto",
   "screen",
   "eval",
+  "ingesta",
+  "ingerir",
+  "memory",
   "mejoras",
   "aprende",
   "improve",
@@ -814,6 +837,16 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
 
     case "feedback":
       return feedbackCommand(chatId, args);
+
+    case "ingest":
+    case "ingesta":
+    case "ingerir":
+    case "aprende-de":
+      return ingestCommand(chatId, args, messageId);
+
+    case "memoria":
+    case "memory":
+      return memoryCommand(chatId, args);
 
     case "evals":
     case "eval":
@@ -1882,6 +1915,12 @@ async function feedbackNote(chatId, agentId, note, message) {
     user: message.from?.username ?? String(message.from?.id ?? ""),
   });
   await server.sendMessage(agent.id, buildFeedbackPrompt(note));
+  const base = feedbackBase(chatId, agent);
+  learn(
+    chatId,
+    `Human feedback on a task like "${base.task.slice(0, 160)}": ${note}`,
+    { agent: agent.name, origin: "feedback" },
+  ).catch(() => {});
   agent.lastAsk = `(corrección) ${note}`.slice(0, 600);
   markPending(agent);
   save();
@@ -2288,6 +2327,27 @@ async function judgeDone(chatId, agent, raw) {
     });
   }
   save();
+  for (const row of merged.filter(
+    (item) => (item.score < 3.5 || item.passed === false) && item.mejora,
+  )) {
+    learn(chatId, `Eval ${row.key} (${row.score}/5): ${row.mejora}`, {
+      origin: "eval",
+      evidence: row.fallos.join("; "),
+    }).catch(() => {});
+  }
+  // Automejora: failed evals start @curador (at most once a day).
+  const weak = merged.some((row) => row.score < 3.5 || row.passed === false);
+  if (
+    weak &&
+    chat.autoImprove !== false &&
+    Date.now() - (chat.lastAutoImproveAt ?? 0) > 20 * 3600_000
+  ) {
+    chat.lastAutoImproveAt = Date.now();
+    save();
+    improveCommand(chatId, "lo que falló en los últimos evals", null).catch(
+      (error) => log("auto improve failed", error.message),
+    );
+  }
   const passedCount = merged.filter((row) => row.passed).length;
   return say(
     chatId,
@@ -2303,6 +2363,18 @@ async function improveCommand(chatId, args, messageId) {
     .trim()
     .split(/\s+/)
     .filter(Boolean);
+  if (sub === "auto") {
+    if (type === "on" || type === "off") {
+      chat.autoImprove = type === "on";
+      save();
+    }
+    return say(
+      chatId,
+      chat.autoImprove === false
+        ? "✋ Automejora apagada: todas las propuestas esperan tu ✅. (/mejora auto on)"
+        : "🤖 Automejora encendida: tras evals con fallos, @curador propone y aplico solas las reglas y casos que pasan la validación; las skills nuevas siempre esperan tu ✅. Deshaz cualquier cosa con /mejora quitar. (/mejora auto off)",
+    );
+  }
   if (sub === "lista" || sub === "list") {
     const rules = quality.guardrails();
     const skills = quality.learnedSkills();
@@ -2397,6 +2469,9 @@ async function curatorDone(chatId, agent, raw) {
       createdAt: Date.now(),
     };
     chat.proposals.push(item);
+    if (chat.autoImprove !== false && item.type !== "skill") {
+      if (await applyProposal(chatId, item, "automejora")) continue;
+    }
     const icon = { skill: "🧰", guardrail: "🛡️", eval: "🧪" }[item.type];
     await say(
       chatId,
@@ -2430,6 +2505,12 @@ async function handleProposal(chatId, query, action, id) {
     await telegram.answerCallback(query.id, "Descartada");
     return say(chatId, `✖️ Propuesta "${item.name}" descartada por ${who}.`);
   }
+  const applied = await applyProposal(chatId, item, String(who ?? ""));
+  await telegram.answerCallback(query.id, applied ? "Aplicada" : "Falló");
+}
+
+/** Applies a validated proposal, saves it as a lesson and reports it. */
+async function applyProposal(chatId, item, who) {
   try {
     if (item.type === "guardrail") quality.addGuardrail(item.content);
     else if (item.type === "skill") {
@@ -2437,22 +2518,31 @@ async function handleProposal(chatId, query, action, id) {
       installLearnedSkills(quality, SKILL_TARGETS);
     } else quality.writeCase(JSON.parse(item.content));
   } catch (error) {
-    await telegram.answerCallback(query.id, "Falló");
-    return say(chatId, `⚠️ No pude aplicar "${item.name}": ${error.message}`);
+    await say(chatId, `⚠️ No pude aplicar "${item.name}": ${error.message}`);
+    return false;
   }
   item.status = "applied";
-  item.appliedBy = String(who ?? "");
+  item.appliedBy = who;
   save();
-  await telegram.answerCallback(query.id, "Aplicada");
+  learn(
+    chatId,
+    item.type === "guardrail"
+      ? `Team rule: ${item.content}`
+      : `New ${item.type} "${item.name}": ${item.reason}`,
+    { origin: "mejora", evidence: item.evidence },
+  ).catch(() => {});
   const effect = {
     guardrail: "Los agentes nuevos ya siguen esta regla.",
     skill: "Los agentes nuevos ya tienen esta skill.",
     eval: "Entra en el próximo /evals casos.",
   }[item.type];
-  return say(
+  const undo =
+    item.type === "guardrail" ? "regla <n>" : `${item.type} ${item.name}`;
+  await say(
     chatId,
-    `✅ Aplicada por ${who}: ${item.type} "${item.name}". ${effect}\n/evals casos mide si mejora.`,
+    `${who === "automejora" ? "🤖 Aplicada sola (automejora)" : `✅ Aplicada por ${who}`}: ${item.type} "${item.name}". ${effect}${item.type === "guardrail" ? `\n${item.content}` : ""}\n/evals casos mide si mejora · /mejora quitar ${undo} para deshacerlo.`,
   );
+  return true;
 }
 
 /** Eval, judge and curator agents report through the loop, not as results. */
@@ -2470,6 +2560,232 @@ async function qualityAgentDone(chatId, agent, raw) {
     return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Team memory: ingest data, lessons from feedback, /memoria
+// ---------------------------------------------------------------------------
+
+const KNOWLEDGE_ROOTS = (
+  process.env.KNOWLEDGE_ROOTS || "/projects,/documents,/workspace"
+)
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const UPLOADS_DIR = join(quality.dir, "uploads");
+const qdrantRest = process.env.QDRANT_URL
+  ? new QdrantRest({
+      url: process.env.QDRANT_URL,
+      collection: process.env.MEMORY_COLLECTION || "agent-memory",
+    })
+  : null;
+let memoryMcp = null;
+
+async function memoryTools() {
+  if (!process.env.QDRANT_URL)
+    throw new Error("la memoria (QDRANT_URL) no está configurada");
+  if (memoryMcp?.running) return memoryMcp;
+  const server = buildMemoryMcpServer(process.env);
+  memoryMcp = new McpStdioClient({ command: server.command, env: server.env });
+  await memoryMcp.start();
+  return memoryMcp;
+}
+
+const memoryStore = async (information, metadata) =>
+  (await memoryTools()).callTool("qdrant-store", { information, metadata });
+
+/** Saves a lesson in the shared memory; never fails the caller. */
+async function learn(
+  chatId,
+  lesson,
+  { agent = null, origin = "feedback", evidence = "" } = {},
+) {
+  if (!process.env.QDRANT_URL || !String(lesson ?? "").trim()) return false;
+  try {
+    const note = buildLessonNote({
+      lesson,
+      project: state.chat(chatId).project ?? null,
+      agent,
+      origin,
+      evidence,
+    });
+    await storeNotes([note], { store: memoryStore, rest: qdrantRest });
+    return true;
+  } catch (error) {
+    log("lesson not stored", error.message);
+    if (!memoryMcp?.running) memoryMcp = null;
+    return false;
+  }
+}
+
+async function ingestCommand(chatId, args, messageId) {
+  const chat = state.chat(chatId);
+  const raw = args.trim();
+  if (!raw) {
+    return say(
+      chatId,
+      "Uso: /ingest <ruta | carpeta | URL> — lo guardo en la memoria del equipo (Qdrant) para que todos los agentes lo encuentren. También puedes mandarme un archivo (md, txt, csv, json, código, html).",
+    );
+  }
+  const source = /^https?:\/\//i.test(raw)
+    ? raw
+    : resolve(workingDirFor(chat), raw);
+  telegram.sendChatAction(chatId, "typing").catch(() => {});
+  try {
+    const result = await ingestSource(source, {
+      store: memoryStore,
+      rest: qdrantRest,
+      project: chat.project ?? null,
+      allowedRoots: /^https?:/i.test(source) ? [] : KNOWLEDGE_ROOTS,
+    });
+    const repo = !/^https?:/i.test(source) ? findRepoRoot(source) : null;
+    if (repo) runGraphify(["update", repo], repo, 30 * 60_000).catch(() => {});
+    return say(
+      chatId,
+      `🧠 Ingerido en la memoria: ${result.sources} fuente(s), ${result.chunks} fragmento(s)${result.skipped.length ? ` · omití ${result.skipped.length} (binarios, secretos o vacíos)` : ""}.${repo ? `\n🕸️ Actualizando el grafo de ${repo}.` : ""}\nLos agentes lo encuentran con qdrant-find.`,
+      messageId ? { replyTo: messageId } : {},
+    );
+  } catch (error) {
+    if (!memoryMcp?.running) memoryMcp = null;
+    return say(chatId, `⚠️ No pude ingerir ${raw}: ${error.message}`);
+  }
+}
+
+/** A file sent to the chat: saved, ingested, and the caption (if any) handled. */
+async function handleDocument(message) {
+  const chatId = scopeOf(message);
+  if (!isAuthorized(config, chatId, message.from?.id)) return;
+  const doc = message.document;
+  const name = String(doc.file_name || `archivo-${doc.file_unique_id}`)
+    .replace(/[^\w.@-]+/g, "_")
+    .slice(-120);
+  if ((doc.file_size ?? 0) > 20 * 1024 * 1024)
+    return say(
+      chatId,
+      "⚠️ El archivo pasa de 20 MB (límite de Telegram para bots).",
+    );
+  if (!ingestible(name, doc.file_size ?? 0))
+    return say(
+      chatId,
+      `⚠️ No ingiero "${name}": solo texto, docs y código (no binarios ni archivos de secretos).`,
+      { replyTo: message.message_id },
+    );
+  try {
+    const data = await telegram.downloadFile(doc.file_id);
+    const dir = join(UPLOADS_DIR, String(chatId).replace(/[^\w-]/g, "_"));
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, name);
+    writeFileSync(path, data);
+    const chat = state.chat(chatId);
+    const text = readSourceFile(path) ?? "";
+    const notes = buildChunkNotes({
+      text,
+      source: `telegram:${chatId}/${name}`,
+      title: name,
+      project: chat.project ?? null,
+      kind: "document",
+      tags: ["telegram"],
+    });
+    const chunks = await storeNotes(notes, {
+      store: memoryStore,
+      rest: qdrantRest,
+    });
+    appendChatLog(
+      chat,
+      message.from?.first_name || "humano",
+      `(archivo ${name})`,
+    );
+    await say(
+      chatId,
+      `🧠 Guardé "${name}" en la memoria del equipo (${chunks} fragmento(s)).`,
+      { replyTo: message.message_id },
+    );
+    const caption = String(message.caption ?? "").trim();
+    if (
+      caption &&
+      !/^(aprende|ingesta|ingiere|memoria|guarda|ingest)\b/i.test(caption)
+    ) {
+      return routeToCoordinator(
+        chatId,
+        `${caption}\n\n(El usuario adjuntó ${name}: está en ${path} y en la memoria; búscalo con qdrant-find.)`,
+        message.message_id,
+      );
+    }
+  } catch (error) {
+    if (!memoryMcp?.running) memoryMcp = null;
+    return say(chatId, `⚠️ No pude guardar "${name}": ${error.message}`);
+  }
+}
+
+async function memoryCommand(chatId, args) {
+  const [sub = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+  if (!process.env.QDRANT_URL)
+    return say(
+      chatId,
+      "La memoria (QDRANT_URL) no está configurada en este contenedor.",
+    );
+  if (sub === "buscar" || sub === "search" || sub === "find") {
+    const query = rest.join(" ");
+    if (!query) return say(chatId, "Uso: /memoria buscar <qué>");
+    try {
+      const result = await (
+        await memoryTools()
+      ).callTool("qdrant-find", { query });
+      const found = (result?.content ?? [])
+        .map((item) => item.text)
+        .join("\n")
+        .trim();
+      return say(
+        chatId,
+        `🔎 Memoria — "${query}":\n\n${(found || "Nada encontrado.").slice(0, 3500)}`,
+      );
+    } catch (error) {
+      memoryMcp = null;
+      return say(chatId, `⚠️ Búsqueda fallida: ${error.message}`);
+    }
+  }
+  if (sub === "aprende" || sub === "learn") {
+    const lesson = rest.join(" ");
+    if (!lesson)
+      return say(chatId, "Uso: /memoria aprende <lección para todo el equipo>");
+    return say(
+      chatId,
+      (await learn(chatId, lesson, { origin: "human" }))
+        ? "🧠 Lección guardada para todos los agentes."
+        : "⚠️ No pude guardarla.",
+    );
+  }
+  try {
+    const counts = await qdrantRest.countByType([
+      "conversation-summary",
+      "project-doc",
+      "document",
+      "web",
+      "lesson",
+    ]);
+    const total = await qdrantRest.count();
+    const labels = {
+      "conversation-summary": "resúmenes de conversaciones",
+      "project-doc": "docs de proyectos",
+      document: "documentos",
+      web: "páginas web",
+      lesson: "lecciones",
+    };
+    return say(
+      chatId,
+      [
+        `🧠 Memoria del equipo (Qdrant): ${total} notas`,
+        ...Object.entries(counts).map(
+          ([key, value]) => `• ${labels[key]}: ${value}`,
+        ),
+        `🛡️ Reglas aprendidas: ${quality.guardrails().length} · 🧰 skills aprendidas: ${quality.learnedSkills().length} · automejora ${state.chat(chatId).autoImprove === false ? "off" : "on"}`,
+        "Todos los agentes usan qdrant_memory + knowledge (grafo graphify) siempre.",
+        "/memoria buscar <q> · /memoria aprende <lección> · /ingest <ruta|URL> · manda un archivo",
+      ].join("\n"),
+    );
+  } catch (error) {
+    return say(chatId, `⚠️ No pude leer la memoria: ${error.message}`);
+  }
 }
 
 /** After a lead's first answer, offer to hand out the plan it wrote. */
@@ -2533,6 +2849,8 @@ async function pollTelegram() {
           if (update.message?.migrate_to_chat_id)
             handleMigration(update.message);
           else if (update.message?.text) await handleMessage(update.message);
+          else if (update.message?.document)
+            await handleDocument(update.message);
           else if (update.callback_query)
             await handleCallback(update.callback_query);
         } catch (error) {

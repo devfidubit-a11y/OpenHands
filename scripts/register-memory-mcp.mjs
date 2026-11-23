@@ -11,9 +11,33 @@
  * MEMORY_COLLECTION, MEMORY_EMBEDDING_MODEL, FASTEMBED_CACHE_PATH.
  */
 
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const MEMORY_MCP_KEY = "qdrant_memory";
+export const KNOWLEDGE_MCP_KEY = "knowledge";
+
+/**
+ * The knowledge MCP server (scripts/knowledge-mcp.mjs): the graphify code
+ * graph and data ingestion into the same Qdrant memory.
+ */
+export function buildKnowledgeMcpServer(env) {
+  const memory = buildMemoryMcpServer(env);
+  return {
+    transport: "stdio",
+    command: "node",
+    args: [
+      env.KNOWLEDGE_MCP_SCRIPT ||
+        join(dirname(fileURLToPath(import.meta.url)), "knowledge-mcp.mjs"),
+    ],
+    env: {
+      ...memory.env,
+      KNOWLEDGE_ROOTS: env.KNOWLEDGE_ROOTS || "/projects,/documents,/workspace",
+    },
+    description:
+      "Team knowledge: graphify code graph (graph_report, graph_explain, graph_path) and data ingestion into the shared memory (memory_ingest, memory_learn)",
+  };
+}
 
 export function buildMemoryMcpServer(env) {
   const serverEnv = {
@@ -51,7 +75,12 @@ export async function registerMcpServer(
   env,
   key,
   entry,
-  { log = console.log, tag = "mcp", timeoutMs = 180_000 } = {},
+  {
+    log = console.log,
+    tag = "mcp",
+    timeoutMs = 180_000,
+    ensureEnabled = false,
+  } = {},
 ) {
   const base = (env.OH_AGENT_SERVER_URL || "http://127.0.0.1:18000").replace(
     /\/+$/,
@@ -69,6 +98,23 @@ export async function registerMcpServer(
   }
   const existing = settings.agent_settings?.mcp_config ?? {};
   if (existing && typeof existing === "object" && key in existing) {
+    // "Always connected": a disabled entry is switched back on.
+    if (ensureEnabled && existing[key]?.enabled === false) {
+      const res = await fetch(
+        `${base}/api/settings/mcp/${encodeURIComponent(key)}`,
+        {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ ...entry, enabled: true }),
+        },
+      );
+      log(
+        res.ok
+          ? `[${tag}] ${key} MCP server was disabled; enabled it again`
+          : `[${tag}] re-enabling ${key} MCP failed: HTTP ${res.status}`,
+      );
+      return res.ok ? "enabled" : "failed";
+    }
     log(`[${tag}] ${key} MCP server already configured`);
     return "exists";
   }
@@ -89,10 +135,22 @@ export async function registerMemoryMcp(env = process.env, log = console.log) {
     log("[memory] QDRANT_URL not set; skipping memory MCP registration");
     return "skipped";
   }
-  return registerMcpServer(env, MEMORY_MCP_KEY, buildMemoryMcpServer(env), {
-    log,
-    tag: "memory",
-  });
+  // MEMORY_ALWAYS_ON=false keeps a user's "disabled" choice in Settings → MCP.
+  const ensureEnabled = env.MEMORY_ALWAYS_ON !== "false";
+  const memory = await registerMcpServer(
+    env,
+    MEMORY_MCP_KEY,
+    buildMemoryMcpServer(env),
+    { log, tag: "memory", ensureEnabled },
+  );
+  if (memory === "unreachable") return memory;
+  await registerMcpServer(
+    env,
+    KNOWLEDGE_MCP_KEY,
+    buildKnowledgeMcpServer(env),
+    { log, tag: "knowledge", ensureEnabled, timeoutMs: 10_000 },
+  );
+  return memory;
 }
 
 const isMain =

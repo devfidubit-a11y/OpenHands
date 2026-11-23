@@ -214,6 +214,8 @@ COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
 COPY scripts/register-pen-mcp.mjs /opt/agent-canvas/register-pen-mcp.mjs
 COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
 COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs
+COPY scripts/knowledge-lib.mjs /opt/agent-canvas/knowledge-lib.mjs
+COPY scripts/knowledge-mcp.mjs /opt/agent-canvas/knowledge-mcp.mjs
 # safe-branch: backed-up feature branches and a pre-commit risk check that
 # agents run before pushing (change-safety-guard skill).
 COPY scripts/safe-branch.mjs /opt/agent-canvas/safe-branch.mjs

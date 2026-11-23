@@ -160,6 +160,10 @@ export function buildQualityNote(guardrails = []) {
     "- Use the code-quality-gate skill when you change code: run the project's own lint, type check and tests for what you changed, add a test for each behavior change, keep the diff small, and follow change-safety-guard.",
     "- Finish your final answer with one line `VERIFICACIÓN: <commands you ran and their results>` (or why you couldn't verify). Never claim a check you did not run.",
     "- Never print secrets or tokens in your answer.",
+    "Team memory (always on: the qdrant_memory and knowledge MCP servers):",
+    "- Start: `qdrant-find` with the task and the project name (past decisions, lessons, docs, earlier conversations), and `graph_report` on the working folder before you explore unfamiliar code (`graph_explain` / `graph_path` for details).",
+    "- During: when the user hands you data (a doc, a folder, a URL) to know about, `memory_ingest` it.",
+    "- End: `memory_learn` 1 to 3 durable lessons a teammate would need next time (a decision and its why, a gotcha, a fix that worked, a convention), with the project. Not trivia, never secrets.",
   ];
   if (guardrails.length) {
     lines.push("Rules learned from past feedback (follow them):");

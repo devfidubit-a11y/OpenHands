@@ -94,9 +94,10 @@ export function loadState(path) {
       initialized: Boolean(data.initialized),
       conversations: data.conversations ?? {},
       repos: data.repos ?? {},
+      docs: data.docs ?? {},
     };
   } catch {
-    return { initialized: false, conversations: {}, repos: {} };
+    return { initialized: false, conversations: {}, repos: {}, docs: {} };
   }
 }
 
