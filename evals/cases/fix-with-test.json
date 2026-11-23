@@ -1,0 +1,19 @@
+{
+  "id": "fix-with-test",
+  "title": "Arregla un bug y lo verifica",
+  "prompt": "El test de cart falla. Arréglalo.",
+  "expect": [
+    "Fixes the bug in cart.mjs, not by changing the test's expectations",
+    "Runs node --test and reports the result in a VERIFICACIÓN line",
+    "Keeps the change small"
+  ],
+  "keep": ["cart.test.mjs"],
+  "check": "node-test",
+  "setup": {
+    "files": {
+      "package.json": "{\n  \"name\": \"cart\",\n  \"type\": \"module\",\n  \"scripts\": { \"test\": \"node --test\" }\n}\n",
+      "cart.mjs": "/** Total of the cart in cents, after a percentage discount. */\nexport function total(items, discountPercent = 0) {\n  const subtotal = items.reduce((sum, item) => sum + item.price, 0);\n  return Math.round(subtotal - subtotal * discountPercent);\n}\n",
+      "cart.test.mjs": "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { total } from './cart.mjs';\n\ntest('sums quantities', () => {\n  assert.equal(total([{ price: 250, qty: 2 }, { price: 100, qty: 1 }]), 600);\n});\n\ntest('applies a percentage discount', () => {\n  assert.equal(total([{ price: 1000, qty: 1 }], 10), 900);\n});\n"
+    }
+  }
+}

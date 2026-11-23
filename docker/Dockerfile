@@ -183,6 +183,9 @@ COPY scripts/runtime-services-info.mjs /opt/agent-canvas/runtime-services-info.m
 # when TELEGRAM_BOT_TOKEN is set.
 COPY scripts/telegram-bridge.mjs /opt/agent-canvas/telegram-bridge.mjs
 COPY scripts/telegram-bridge-lib.mjs /opt/agent-canvas/telegram-bridge-lib.mjs
+COPY scripts/agent-quality-lib.mjs /opt/agent-canvas/agent-quality-lib.mjs
+# Built-in agent eval cases for /evals casos (docs/FEEDBACK-LOOP.md).
+COPY evals/cases/ /opt/agent-canvas/evals/cases/
 
 # Shared memory and code-graph tools for agents (docs/MEMORY.md):
 #   mcp-server-qdrant  MCP server over the Qdrant service in compose.yml

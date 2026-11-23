@@ -1,0 +1,17 @@
+{
+  "id": "ask-readonly",
+  "title": "Responde con citas sin tocar nada",
+  "prompt": "¿Dónde se calcula el impuesto de un pedido y qué tasa usa?",
+  "expect": [
+    "Cites the file and line (pricing/tax.js) where the tax is computed",
+    "Says the rate is 19% (0.19)",
+    "Does not edit any file"
+  ],
+  "unchanged": true,
+  "setup": {
+    "files": {
+      "pricing/tax.js": "export const TAX_RATE = 0.19;\n\nexport function withTax(amount) {\n  return Math.round(amount * (1 + TAX_RATE));\n}\n",
+      "orders/order.js": "import { withTax } from '../pricing/tax.js';\n\nexport function orderTotal(lines) {\n  const net = lines.reduce((sum, line) => sum + line.amount, 0);\n  return withTax(net);\n}\n"
+    }
+  }
+}

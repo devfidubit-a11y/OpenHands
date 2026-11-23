@@ -631,6 +631,8 @@ describe("schedules", () => {
     for (const bot of Object.values(BOT_TEMPLATES)) {
       const parsed = parseScheduleArgs(`${bot.when} ${bot.text}`);
       expect(parsed.error).toBeUndefined();
+      // The bridge runs its own commands (/evals, /mejora) directly.
+      if (/^\/(evals|mejora)\b/.test(parsed.text)) continue;
       expect(expandScheduledText(parsed.text).length).toBeGreaterThan(20);
     }
     expect(expandScheduledText("/latency")).toMatch(/latency-optimizer/);

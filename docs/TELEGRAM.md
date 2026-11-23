@@ -325,3 +325,23 @@ There are two supported ways to use Claude:
 
 Both work from Telegram. Make the Agent Profile you want the active one (or pass
 `OH_AGENT_PROFILE`, or use `/profile` in the chat).
+
+## Feedback loop: evals, skills and guardrails
+
+Every result has 👍/👎 buttons. With 👎 the bot asks what went wrong and sends
+your note to the agent so it fixes the result.
+
+| Command | What it does |
+| --- | --- |
+| `/feedback` | Ratings per agent |
+| `/feedback @agent <note>` | Leave a note |
+| `/evals` | @juez scores the recent work |
+| `/evals casos` | Run the eval cases in scratch folders and compare with the last run |
+| `/evals skills` | Lint the skills |
+| `/mejora` | @curador proposes new skills, guardrail rules or eval cases from the evidence; you approve each one |
+
+Answers are checked before they're posted: secrets are hidden, risky commands
+are flagged, and so is a code change without a `VERIFICACIÓN` line.
+
+Bots: `/bot evals` and `/bot mejora`. Details are in
+[FEEDBACK-LOOP.md](FEEDBACK-LOOP.md).

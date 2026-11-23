@@ -1357,6 +1357,18 @@ export const BOT_TEMPLATES = {
     description:
       "Cada semana un consejo de expertos debate y propone las mejoras del producto; tú apruebas el plan.",
   },
+  evals: {
+    when: "domingo 18:00",
+    text: "/evals casos",
+    description:
+      "Cada semana corre los casos de evaluación de los agentes y compara la puntuación con la semana anterior.",
+  },
+  mejora: {
+    when: "lunes 10:00",
+    text: "/mejora",
+    description:
+      "Cada semana @curador convierte el feedback y los evals en skills, reglas o casos nuevos; tú apruebas cada uno.",
+  },
   wiki: {
     when: "domingo 20:00",
     text: "/wiki actualiza solo las páginas cuyo código cambió",

@@ -12,9 +12,35 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile, rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  QualityStore,
+  buildCaseRunPrompt,
+  buildCuratorPrompt,
+  buildFeedbackPrompt,
+  buildJudgePrompt,
+  buildQualityNote,
+  casePassed,
+  checkCase,
+  feedbackStats,
+  formatScoreboard,
+  installLearnedSkills,
+  lintSkillsDir,
+  parseEvalLines,
+  parseProposals,
+  prepareCase,
+  pruneRuns,
+  readCases,
+  reviewAnswer,
+  uninstallSkill,
+  validateProposal,
+} from "./agent-quality-lib.mjs";
 
 import {
   AgentServerClient,
@@ -128,6 +154,16 @@ Consejo de expertos (trabajan en paralelo, debaten y votan):
   Ej.: /consejo ux, growth, producto: por qué no convierte la landing
 /consejo — expertos disponibles y consejos en curso
 
+Calidad y aprendizaje (feedback loop):
+👍/👎 bajo cada resultado — tu valoración; con 👎 te pregunto qué falló y se lo paso al agente para que lo corrija
+/feedback — valoraciones por agente · /feedback @agente <nota> — deja una nota
+/evals — @juez puntúa el trabajo reciente (tarea, verificación, calidad, seguridad, comunicación)
+/evals casos [id…] — corre los casos de evaluación en carpetas de prueba y compara con la última vez
+/evals skills — revisa que las skills estén bien escritas · /evals historial
+/mejora [enfoque] — @curador convierte el feedback y los evals en nuevas skills, reglas (guardrails) o casos; tú apruebas cada una
+/mejora lista — lo aprendido · /mejora quitar regla <n> | skill <nombre> | eval <id>
+Cada respuesta pasa un control: oculta secretos, avisa de comandos de riesgo y de cambios de código sin VERIFICACIÓN.
+
 Bots y tareas programadas:
 /bots — plantillas de bots siempre activos (latency, qa, scans, security, deps, consejo, wiki)
 /bot <plantilla> [cuándo] — activa un bot en este chat y carpeta
@@ -164,6 +200,9 @@ const COMMANDS = [
   ["ux", "Revisión y optimización UX del diseño"],
   ["design", "Frontend con diseños de pen.dev"],
   ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
+  ["feedback", "Valoraciones de los agentes"],
+  ["evals", "Evaluar a los agentes (@juez)"],
+  ["mejora", "Aprender del feedback: skills, reglas y evals"],
   ["bots", "Plantillas de bots"],
   ["bot", "Activar un bot programado"],
   ["schedule", "Tareas programadas"],
@@ -181,6 +220,10 @@ const KNOWN_COMMANDS = new Set([
   "proyectos",
   "foto",
   "screen",
+  "eval",
+  "mejoras",
+  "aprende",
+  "improve",
   "schedules",
   "whoami",
 ]);
@@ -198,6 +241,45 @@ const telegram = new TelegramClient({
 
 const save = () => state.save(config.statePath);
 const log = (...args) => console.log(new Date().toISOString(), ...args);
+
+// Feedback loop (docs/FEEDBACK-LOOP.md): learned mechanisms live next to the
+// bridge state; built-in skills and eval cases ship with the bridge.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const firstDir = (...dirs) =>
+  dirs.find((dir) => dir && existsSync(dir)) ?? null;
+const quality = new QualityStore(
+  process.env.AGENT_LEARNING_DIR?.trim() ||
+    join(dirname(resolve(config.statePath)), "agent-learning"),
+);
+const BUILTIN_CASES_DIR = firstDir(
+  process.env.AGENT_EVALS_DIR?.trim(),
+  join(HERE, "evals/cases"),
+  join(HERE, "../evals/cases"),
+);
+const BUILTIN_SKILLS_DIR = firstDir(
+  join(HERE, "skills"),
+  join(HERE, "../skills"),
+);
+const SKILL_TARGETS = [
+  join(homedir(), ".agents/skills"),
+  join(
+    process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"),
+    "skills",
+  ),
+];
+const builtinSkills = () =>
+  BUILTIN_SKILLS_DIR
+    ? readdirSync(BUILTIN_SKILLS_DIR).filter((name) =>
+        existsSync(join(BUILTIN_SKILLS_DIR, name, "SKILL.md")),
+      )
+    : [];
+const allCases = () => {
+  const learned = quality.learnedCases();
+  const builtin = readCases(BUILTIN_CASES_DIR).filter(
+    (item) => !learned.some((other) => other.id === item.id),
+  );
+  return [...builtin, ...learned];
+};
 
 async function say(chatId, text, extra = {}, agent = null) {
   const sent = await telegram.sendText(chatId, text, extra);
@@ -248,6 +330,7 @@ function resolveTarget(chatId, ref) {
 
 async function sendToAgent(chatId, agent, text, replyTo) {
   await server.sendMessage(agent.id, text);
+  agent.lastAsk = String(text).slice(0, 600);
   markPending(agent);
   save();
   await say(chatId, `➡️ Enviado a @${agent.name}`, { replyTo });
@@ -349,7 +432,7 @@ async function createAgent(
   const others = chat.agents.map((item) => item.name);
   const conversation = await server.createConversation({
     profileId,
-    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others, config.chatMcpPort ? String(chatId) : "")}${task}`,
+    task: `${buildProjectContext(chat.project, dir)}${buildAgentNetworkNote(finalName, others, config.chatMcpPort ? String(chatId) : "")}${buildQualityNote(quality.guardrails())}${task}`,
     workingDir: dir,
     chatId,
     project: chat.project ?? null,
@@ -359,7 +442,7 @@ async function createAgent(
     name: finalName,
   });
   const agent = state.findAgent(chatId, agentName);
-  Object.assign(agent, extra);
+  Object.assign(agent, { task: String(task).slice(-600) }, extra);
   save();
   return agent;
 }
@@ -729,6 +812,19 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
         messageId,
       );
 
+    case "feedback":
+      return feedbackCommand(chatId, args);
+
+    case "evals":
+    case "eval":
+      return evalsCommand(chatId, args, messageId);
+
+    case "mejora":
+    case "mejoras":
+    case "aprende":
+    case "improve":
+      return improveCommand(chatId, args, messageId);
+
     case "consejo":
     case "council":
     case "debate": {
@@ -807,6 +903,18 @@ async function handleMessage(message) {
   }
 
   const room = state.chat(chatId);
+  // The note after a 👎: "¿Qué falló?".
+  const pending = room.pendingFeedback;
+  if (pending && parsed.kind === "text") {
+    delete room.pendingFeedback;
+    save();
+    const fresh = Date.now() - pending.at < 30 * 60_000;
+    const repliesElsewhere =
+      message.reply_to_message &&
+      message.reply_to_message.message_id !== pending.messageId;
+    if (fresh && !repliesElsewhere)
+      return feedbackNote(chatId, pending.agentId, parsed.text, message);
+  }
   if (parsed.kind === "text") {
     // "hola /team arma el login": a command written inside a sentence.
     const inline = findInlineCommand(parsed.text, KNOWN_COMMANDS);
@@ -895,8 +1003,13 @@ async function handleCallback(query) {
   }
   const [action, conversationId] = String(query.data ?? "").split(":");
   const chat = state.chat(chatId);
+  if (action === "apply" || action === "drop")
+    return handleProposal(chatId, query, action, conversationId);
   const agent = chat.agents.find((item) => item.id === conversationId);
   if (!agent) return telegram.answerCallback(query.id, "Agente desconocido");
+
+  if (action === "up" || action === "down")
+    return rateAgent(chatId, query, agent, action === "up" ? 1 : -1);
 
   if (action === "go" || action === "skip") {
     const plan = agent.plan ?? [];
@@ -1456,6 +1569,13 @@ async function runSchedule(chatId, item) {
   const council = /^\/(?:consejo|council|debate)(?:@\S+)?\s+([\s\S]+)$/i.exec(
     item.text.trim(),
   );
+  const direct = parseMessage(item.text.trim());
+  if (
+    direct.kind === "command" &&
+    ["evals", "eval", "mejora", "aprende", "improve"].includes(direct.command)
+  ) {
+    return handleCommand(chatId, direct.command, direct.args, null);
+  }
   if (council) {
     const parsed = parseCouncilArgs(council[1]);
     if (parsed.usage) return say(chatId, parsed.usage);
@@ -1554,16 +1674,18 @@ async function watchAgents() {
         // A fast agent can finish between polls; "finished" proves it ran.
         if (event === "done") agent.seenRunning = true;
         if (event === "done") {
-          const response = await server.finalResponse(agent.id).catch(() => "");
-          await say(
-            chatId,
-            `✅ @${agent.name}: ${response || "terminé, pero no dejé un mensaje final."}`,
-            {},
-            agent,
-          );
+          const raw = await server.finalResponse(agent.id).catch(() => "");
+          if (await qualityAgentDone(chatId, agent, raw)) continue;
+          const response = await postResult(chatId, agent, raw);
           if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
           if (agent.penPending) await penAgentDone(chatId, agent, response);
           await relayAgentMessages(chatId, agent, response);
+        } else if (event === "problem" && agent.evalCase) {
+          await evalCaseDone(
+            chatId,
+            agent,
+            `(el agente quedó en estado "${next}")`,
+          );
         } else if (event === "problem") {
           const reason =
             next === "error"
@@ -1647,6 +1769,707 @@ async function watchAgents() {
     }
   }
   save();
+}
+
+// ---------------------------------------------------------------------------
+// Feedback loop: results with 👍/👎, evals (@juez), proposals (@curador)
+// ---------------------------------------------------------------------------
+
+const MAX_RECENT_WORK = 20;
+const isReadOnly = (agent) =>
+  Boolean(agent.expert || agent.insights || agent.judgeOf || agent.curator);
+
+/**
+ * Posts a finished answer after the automatic checks (secrets hidden, risky
+ * commands, missing VERIFICACIÓN), with 👍/👎 buttons, and remembers it for
+ * /evals. Returns the text that was posted.
+ */
+async function postResult(chatId, agent, raw) {
+  const review = reviewAnswer(raw, { coding: !isReadOnly(agent) });
+  const text = review.text || "terminé, pero no dejé un mensaje final.";
+  await say(
+    chatId,
+    `✅ @${agent.name}: ${text}${review.notes.length ? `\n\n${review.notes.join("\n")}` : ""}`,
+    {
+      keyboard: [
+        [
+          { text: "👍", callback_data: `up:${agent.id}` },
+          { text: "👎", callback_data: `down:${agent.id}` },
+        ],
+      ],
+    },
+    agent,
+  );
+  const chat = state.chat(chatId);
+  const work = (chat.recentWork ??= []);
+  work.push({
+    id: `${agent.name}-${Date.now().toString(36)}`,
+    agentId: agent.id,
+    agent: agent.name,
+    task: agent.lastAsk ?? agent.task ?? "",
+    response: text.slice(0, 4000),
+    at: Date.now(),
+  });
+  chat.recentWork = work.slice(-MAX_RECENT_WORK);
+  if (review.negative) {
+    quality.addFeedback({
+      scope: chatId,
+      project: chat.project ?? null,
+      agent: agent.name,
+      task: (agent.lastAsk ?? agent.task ?? "").slice(0, 400),
+      response: text.slice(0, 400),
+      rating: -1,
+      source: "auto",
+      note: review.reasons.join("; "),
+    });
+  }
+  save();
+  return text;
+}
+
+function feedbackBase(chatId, agent) {
+  const chat = state.chat(chatId);
+  const last = [...(chat.recentWork ?? [])]
+    .reverse()
+    .find((item) => item.agentId === agent.id);
+  return {
+    scope: chatId,
+    project: chat.project ?? null,
+    agent: agent.name,
+    task: (last?.task ?? agent.lastAsk ?? agent.task ?? "").slice(0, 400),
+    response: (last?.response ?? "").slice(0, 400),
+  };
+}
+
+async function rateAgent(chatId, query, agent, rating) {
+  quality.addFeedback({
+    ...feedbackBase(chatId, agent),
+    rating,
+    source: "human",
+    user: query.from?.username ?? String(query.from?.id ?? ""),
+  });
+  if (rating > 0) {
+    await telegram.answerCallback(query.id, "¡Gracias! 👍");
+    return;
+  }
+  await telegram.answerCallback(query.id, "Anotado 👎");
+  const [sent] = await say(
+    chatId,
+    `👎 Anotado. ¿Qué falló con @${agent.name}? Cuéntamelo en un mensaje y se lo paso para que lo corrija (o escribe "nada").`,
+  );
+  const chat = state.chat(chatId);
+  chat.pendingFeedback = {
+    agentId: agent.id,
+    at: Date.now(),
+    messageId: sent?.message_id ?? null,
+  };
+  save();
+}
+
+async function feedbackNote(chatId, agentId, note, message) {
+  const agent = state.chat(chatId).agents.find((item) => item.id === agentId);
+  if (!agent || /^(nada|no|skip|nothing|ninguno)\.?$/i.test(note.trim())) {
+    return say(chatId, "Vale, queda solo el 👎.", {
+      replyTo: message.message_id,
+    });
+  }
+  quality.addFeedback({
+    ...feedbackBase(chatId, agent),
+    rating: 0,
+    about: "down",
+    note: note.slice(0, 1000),
+    source: "human",
+    user: message.from?.username ?? String(message.from?.id ?? ""),
+  });
+  await server.sendMessage(agent.id, buildFeedbackPrompt(note));
+  agent.lastAsk = `(corrección) ${note}`.slice(0, 600);
+  markPending(agent);
+  save();
+  return say(
+    chatId,
+    `📝 Gracias, lo anoto para que el equipo aprenda y se lo paso a @${agent.name} para que lo corrija.`,
+    { replyTo: message.message_id },
+  );
+}
+
+async function feedbackCommand(chatId, args) {
+  const addressed = /^@([\w-]{1,32})\s+([\s\S]+)$/.exec(args.trim());
+  if (addressed) {
+    const agent = state.findAgent(chatId, addressed[1]);
+    if (!agent) return say(chatId, `No encuentro a @${addressed[1]}.`);
+    const note = addressed[2].trim();
+    const rating = /^👍/.test(note) ? 1 : /^👎/.test(note) ? -1 : 0;
+    quality.addFeedback({
+      ...feedbackBase(chatId, agent),
+      rating,
+      note: note
+        .replace(/^👍|^👎/, "")
+        .trim()
+        .slice(0, 1000),
+      source: "human",
+    });
+    return say(
+      chatId,
+      `📝 Nota para @${agent.name} guardada. /mejora la usará.`,
+    );
+  }
+  const entries = quality.feedback({ scope: chatId });
+  if (entries.length === 0) {
+    return say(
+      chatId,
+      "Aún no hay valoraciones. Usa 👍/👎 bajo cada resultado, o /feedback @agente <nota>.",
+    );
+  }
+  const stats = Object.entries(feedbackStats(entries))
+    .sort((a, b) => b[1].down + b[1].auto - (a[1].down + a[1].auto))
+    .map(
+      ([name, row]) =>
+        `@${name}: 👍 ${row.up} · 👎 ${row.down} · ⚠️ auto ${row.auto}`,
+    );
+  const notes = entries
+    .filter((item) => item.note && item.source !== "auto")
+    .slice(-5)
+    .map((item) => `• @${item.agent}: ${item.note.slice(0, 160)}`);
+  return say(
+    chatId,
+    `📈 Feedback de este chat (${entries.length}):\n${stats.join("\n")}${notes.length ? `\n\nÚltimas notas:\n${notes.join("\n")}` : ""}\n\n/mejora convierte esto en skills, reglas o evals.`,
+  );
+}
+
+// --- evals ------------------------------------------------------------------
+
+async function evalsCommand(chatId, args, messageId) {
+  const chat = state.chat(chatId);
+  const [sub = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+  const kind = sub.toLowerCase();
+
+  if (kind === "skills") {
+    const rows = [
+      ...(BUILTIN_SKILLS_DIR ? lintSkillsDir(BUILTIN_SKILLS_DIR) : []),
+      ...lintSkillsDir(quality.skillsDir).map((row) => ({
+        ...row,
+        name: `${row.name} (aprendida)`,
+      })),
+    ];
+    const bad = rows.filter((row) => row.problems.length);
+    return say(
+      chatId,
+      `🧰 Skills: ${rows.length - bad.length}/${rows.length} sin problemas.${bad.length ? `\n${bad.map((row) => `• ${row.name}: ${row.problems.join("; ")}`).join("\n")}` : ""}`,
+    );
+  }
+
+  if (kind === "historial" || kind === "history") {
+    const results = quality.evals({ scope: chatId });
+    if (results.length === 0)
+      return say(chatId, "Aún no hay evals. Prueba /evals casos.");
+    const runs = new Map();
+    for (const item of results) {
+      const run = runs.get(item.runId) ?? {
+        kind: item.kind,
+        at: item.at,
+        scores: [],
+        passed: 0,
+        total: 0,
+      };
+      run.scores.push(item.score);
+      if (item.passed !== undefined) {
+        run.total += 1;
+        if (item.passed) run.passed += 1;
+      }
+      runs.set(item.runId, run);
+    }
+    const lines = [...runs.values()].slice(-10).map((run) => {
+      const average =
+        Math.round(
+          (run.scores.reduce((a, b) => a + b, 0) / run.scores.length) * 10,
+        ) / 10;
+      return `• ${formatWhen(run.at, config.timeZone)} ${run.kind === "cases" ? "casos" : "trabajo"}: ${average}/5${run.total ? ` · ${run.passed}/${run.total} pasan` : ""}`;
+    });
+    return say(chatId, `📊 Historial de evals:\n${lines.join("\n")}`);
+  }
+
+  const busy = (chat.evalRuns ?? []).find((run) => run.phase !== "done");
+  if (
+    busy &&
+    (kind === "casos" || kind === "cases" || kind === "revisar" || kind === "")
+  ) {
+    if (Date.now() - busy.startedAt < 3 * 3600_000) {
+      return say(
+        chatId,
+        `⏳ Ya hay una evaluación en curso (${busy.kind === "cases" ? "casos" : "trabajo reciente"}). Te aviso al terminar.`,
+      );
+    }
+    busy.phase = "done"; // stale: let a new one start
+  }
+
+  if (kind === "casos" || kind === "cases")
+    return runEvalCases(chatId, rest, messageId);
+  if (
+    kind === "" ||
+    kind === "revisar" ||
+    kind === "review" ||
+    /^\d+$/.test(kind)
+  ) {
+    const count = Number(/^\d+$/.test(kind) ? kind : rest[0]) || 8;
+    return judgeRecentWork(chatId, Math.min(count, 15), messageId);
+  }
+  return say(
+    chatId,
+    "Uso: /evals (puntúa el trabajo reciente) · /evals casos [id…] · /evals skills · /evals historial",
+  );
+}
+
+async function judgeRecentWork(chatId, count, messageId) {
+  const chat = state.chat(chatId);
+  const work = (chat.recentWork ?? []).slice(-count);
+  if (work.length === 0) {
+    return say(
+      chatId,
+      "No hay trabajo reciente que evaluar en este chat. Prueba /evals casos.",
+    );
+  }
+  const notes = quality.feedback({ scope: chatId });
+  const items = work.map((item) => {
+    const human = notes.filter(
+      (entry) =>
+        entry.agent === item.agent &&
+        entry.at >= item.at &&
+        entry.source === "human",
+    );
+    return {
+      id: item.id,
+      agent: item.agent,
+      task: item.task,
+      response: item.response,
+      feedback:
+        human
+          .map((entry) =>
+            entry.rating > 0
+              ? "👍"
+              : entry.rating < 0
+                ? "👎"
+                : `"${entry.note}"`,
+          )
+          .join(" ") || "",
+    };
+  });
+  const run = {
+    id: `eval-${Date.now().toString(36)}`,
+    kind: "work",
+    phase: "judging",
+    startedAt: Date.now(),
+    items: items.map(({ id, agent }) => ({ id, agent })),
+  };
+  (chat.evalRuns ??= []).push(run);
+  chat.evalRuns = chat.evalRuns.slice(-10);
+  const judge = await createAgent(chatId, {
+    name: "juez",
+    task: buildJudgePrompt({
+      items,
+      workingDir: workingDirFor(chat),
+      purpose: "score the team's recent work in this chat",
+    }),
+    extra: { judgeOf: run.id },
+  });
+  run.judge = judge.id;
+  save();
+  return say(
+    chatId,
+    `⚖️ @${judge.name} evalúa ${items.length} respuesta(s) recientes con la rúbrica: tarea, verificación, calidad, seguridad y comunicación. Te paso la puntuación.`,
+    messageId ? { replyTo: messageId } : {},
+  );
+}
+
+async function runEvalCases(chatId, ids, messageId) {
+  const chat = state.chat(chatId);
+  const cases = allCases().filter(
+    (item) => ids.length === 0 || ids.includes(item.id),
+  );
+  if (cases.length === 0) {
+    return say(
+      chatId,
+      `No hay casos${ids.length ? ` con id ${ids.join(", ")}` : ""}. Casos: ${
+        allCases()
+          .map((item) => item.id)
+          .join(", ") || "ninguno"
+      }`,
+    );
+  }
+  pruneRuns(quality.runsDir, 3);
+  const run = {
+    id: `eval-${Date.now().toString(36)}`,
+    kind: "cases",
+    phase: "running",
+    startedAt: Date.now(),
+    cases: [],
+  };
+  run.dir = join(quality.runsDir, run.id);
+  (chat.evalRuns ??= []).push(run);
+  chat.evalRuns = chat.evalRuns.slice(-10);
+  const lines = [];
+  for (const evalCase of cases) {
+    const { dir, hashes } = prepareCase(evalCase, run.dir);
+    const entry = { id: evalCase.id, dir, hashes, done: false };
+    try {
+      const agent = await createAgent(chatId, {
+        name: `eval-${evalCase.id}`.slice(0, 32),
+        task: buildCaseRunPrompt(evalCase, dir),
+        extra: {
+          evalRun: run.id,
+          evalCase: evalCase.id,
+          task: evalCase.prompt,
+        },
+        workingDir: dir,
+      });
+      entry.agentId = agent.id;
+      lines.push(
+        `🧪 ${evalCase.id}${evalCase.source === "learned" ? " (aprendido)" : ""}`,
+      );
+    } catch (error) {
+      entry.done = true;
+      entry.response = `(no se pudo crear el agente: ${error.message})`;
+      lines.push(`⚠️ ${evalCase.id}: ${error.message}`);
+    }
+    run.cases.push(entry);
+  }
+  save();
+  await say(
+    chatId,
+    `🧪 Evaluación con ${cases.length} caso(s), cada uno en su carpeta de prueba:\n${lines.join("\n")}\nCuando terminen, @juez los puntúa y comparo con la vez anterior.`,
+    messageId ? { replyTo: messageId } : {},
+  );
+  return maybeJudgeCases(chatId, run);
+}
+
+async function evalCaseDone(chatId, agent, response) {
+  const chat = state.chat(chatId);
+  const run = (chat.evalRuns ?? []).find((item) => item.id === agent.evalRun);
+  const entry = run?.cases.find((item) => item.id === agent.evalCase);
+  if (entry && !entry.done) {
+    entry.done = true;
+    entry.response = String(response ?? "").slice(0, 6000);
+  }
+  state.removeAgent(chatId, agent.id);
+  save();
+  if (run) await maybeJudgeCases(chatId, run);
+}
+
+async function maybeJudgeCases(chatId, run) {
+  if (run.phase !== "running" || run.cases.some((item) => !item.done)) return;
+  run.phase = "judging";
+  save();
+  const cases = allCases();
+  const items = [];
+  for (const entry of run.cases) {
+    const evalCase = cases.find((item) => item.id === entry.id);
+    entry.checks = evalCase
+      ? await checkCase(evalCase, entry, entry.response)
+      : [];
+    items.push({
+      id: entry.id,
+      agent: `eval-${entry.id}`,
+      task: evalCase?.prompt ?? entry.id,
+      expect: evalCase?.expect ?? [],
+      checks: entry.checks,
+      response: entry.response,
+    });
+  }
+  const judge = await createAgent(chatId, {
+    name: "juez",
+    task: buildJudgePrompt({
+      items,
+      workingDir: run.dir,
+      purpose:
+        "grade the eval cases; each case's scratch folder is <folder>/<id>",
+    }),
+    extra: { judgeOf: run.id },
+    workingDir: run.dir,
+  });
+  run.judge = judge.id;
+  save();
+  const failed = run.cases.filter((item) =>
+    item.checks.some((check) => !check.ok),
+  );
+  return say(
+    chatId,
+    `⚖️ Casos terminados. Chequeos automáticos: ${run.cases.length - failed.length}/${run.cases.length} sin fallos${failed.length ? ` (fallan: ${failed.map((item) => item.id).join(", ")})` : ""}. @${judge.name} está puntuando.`,
+  );
+}
+
+async function judgeDone(chatId, agent, raw) {
+  const chat = state.chat(chatId);
+  const run = (chat.evalRuns ?? []).find((item) => item.id === agent.judgeOf);
+  state.removeAgent(chatId, agent.id);
+  if (!run) return save();
+  run.phase = "done";
+  const results = parseEvalLines(raw);
+  const summary = String(raw ?? "")
+    .replace(/^\s*EVAL\s+\{.*\}\s*$/gm, "")
+    .trim()
+    .slice(0, 1500);
+  if (results.length === 0) {
+    save();
+    return say(
+      chatId,
+      `⚠️ @juez no dejó puntuaciones que pueda leer.\n\n${summary}`,
+    );
+  }
+  const previous = quality.evals({ scope: chatId });
+  const rows = results.map((result) => {
+    const entry = run.cases?.find((item) => item.id === result.id);
+    const known = run.items?.find((item) => item.id === result.id);
+    const key =
+      run.kind === "cases"
+        ? result.id
+        : `@${known?.agent ?? result.id.replace(/-[a-z0-9]+$/, "")}`;
+    const evalCase = entry
+      ? allCases().find((item) => item.id === entry.id)
+      : null;
+    const passed = entry
+      ? casePassed({
+          checks: entry.checks,
+          expectTotal: evalCase?.expect?.length ?? 0,
+          result,
+        })
+      : undefined;
+    const fallos = [
+      ...(entry?.checks ?? [])
+        .filter((check) => !check.ok)
+        .map((check) => `chequeo: ${check.name}`),
+      ...result.fallos,
+    ];
+    return {
+      key,
+      score: result.score,
+      scores: result.scores,
+      passed,
+      fallos,
+      mejora: result.mejora,
+    };
+  });
+  // Recent work: one row per agent (average of its answers).
+  const merged =
+    run.kind === "cases"
+      ? rows
+      : Object.values(
+          rows.reduce((acc, row) => {
+            const item = (acc[row.key] ??= { ...row, all: [] });
+            item.all.push(row.score);
+            item.fallos = [...new Set([...item.fallos, ...row.fallos])].slice(
+              0,
+              4,
+            );
+            item.score =
+              Math.round(
+                (item.all.reduce((a, b) => a + b, 0) / item.all.length) * 10,
+              ) / 10;
+            return acc;
+          }, {}),
+        );
+  const lastByKey = new Map();
+  for (const item of previous.filter((entry) => entry.kind === run.kind))
+    lastByKey.set(item.key, item.score);
+  const board = formatScoreboard(
+    merged,
+    [...lastByKey].map(([key, score]) => ({ key, score })),
+  );
+  for (const row of merged) {
+    quality.addEvalResult({
+      scope: chatId,
+      project: chat.project ?? null,
+      kind: run.kind,
+      runId: run.id,
+      key: row.key,
+      score: row.score,
+      scores: row.scores,
+      passed: row.passed,
+      fallos: row.fallos,
+      mejora: row.mejora,
+    });
+  }
+  save();
+  const passedCount = merged.filter((row) => row.passed).length;
+  return say(
+    chatId,
+    `📊 Evals ${run.kind === "cases" ? `(casos): ${passedCount}/${merged.length} pasan` : "(trabajo reciente)"} · media ${board.average}/5\n${board.text}${summary ? `\n\n${summary}` : ""}\n\n${merged.some((row) => row.score < 3.5 || row.passed === false) ? "/mejora propone skills, reglas o casos para lo que falló." : "Todo en verde 🎉"}`,
+  );
+}
+
+// --- proposals ----------------------------------------------------------------
+
+async function improveCommand(chatId, args, messageId) {
+  const chat = state.chat(chatId);
+  const [sub = "", type = "", ...rest] = args
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (sub === "lista" || sub === "list") {
+    const rules = quality.guardrails();
+    const skills = quality.learnedSkills();
+    const cases = quality.learnedCases();
+    return say(
+      chatId,
+      [
+        "🧠 Lo aprendido (vale para todos los agentes nuevos):",
+        `Reglas (${rules.length}):${rules.length ? `\n${rules.map((rule, index) => `${index + 1}. ${rule}`).join("\n")}` : " ninguna"}`,
+        `Skills: ${skills.join(", ") || "ninguna"}`,
+        `Casos de eval: ${cases.map((item) => item.id).join(", ") || "ninguno"}`,
+        "Quitar: /mejora quitar regla <n> | skill <nombre> | eval <id>",
+      ].join("\n"),
+    );
+  }
+  if (sub === "quitar" || sub === "rm" || sub === "remove") {
+    const target = rest.join(" ");
+    let done = false;
+    if (type === "regla" || type === "rule")
+      done = Boolean(quality.removeGuardrail(Number(target) - 1));
+    else if (type === "skill") {
+      done = quality.removeSkill(target);
+      if (done) uninstallSkill(target, SKILL_TARGETS);
+    } else if (type === "eval" || type === "caso")
+      done = quality.removeCase(target);
+    return say(
+      chatId,
+      done
+        ? `🗑️ Quitado: ${type} ${target}.`
+        : "No lo encontré. Mira /mejora lista.",
+    );
+  }
+  const curator = await createAgent(chatId, {
+    name: "curador",
+    task: buildCuratorPrompt({
+      feedback: quality.feedback({ limit: 200 }),
+      evals: quality.evals({ limit: 100 }),
+      skills: builtinSkills(),
+      learnedSkills: quality.learnedSkills(),
+      guardrails: quality.guardrails(),
+      cases: allCases(),
+      focus: args.trim(),
+      workingDir: workingDirFor(chat),
+    }),
+    extra: { curator: true },
+  });
+  save();
+  return say(
+    chatId,
+    `🧠 @${curator.name} revisa el feedback y los evals para proponer mecanismos nuevos (skills, reglas o casos). Tú apruebas cada uno.`,
+    messageId ? { replyTo: messageId } : {},
+  );
+}
+
+async function curatorDone(chatId, agent, raw) {
+  const chat = state.chat(chatId);
+  state.removeAgent(chatId, agent.id);
+  const context = {
+    builtinSkills: builtinSkills(),
+    learnedSkills: quality.learnedSkills(),
+    guardrails: quality.guardrails(),
+    cases: allCases(),
+  };
+  const parsed = parseProposals(raw);
+  const summary = String(raw ?? "")
+    .replace(/PROPUESTA\s*\n[\s\S]*?>>>/g, "")
+    .trim()
+    .slice(0, 1200);
+  if (parsed.length === 0) {
+    save();
+    return say(
+      chatId,
+      `🧠 @curador no propone mecanismos nuevos.\n\n${summary}`,
+    );
+  }
+  const rejected = [];
+  chat.proposals = (chat.proposals ?? [])
+    .filter((item) => item.status === "pending")
+    .slice(-10);
+  for (const proposal of parsed) {
+    const checked = validateProposal(proposal, context);
+    if (checked.error) {
+      rejected.push(
+        `• ${proposal.type} ${proposal.name || "?"}: ${checked.error}`,
+      );
+      continue;
+    }
+    const item = {
+      ...checked,
+      id: `p${Date.now().toString(36)}${chat.proposals.length}`,
+      status: "pending",
+      createdAt: Date.now(),
+    };
+    chat.proposals.push(item);
+    const icon = { skill: "🧰", guardrail: "🛡️", eval: "🧪" }[item.type];
+    await say(
+      chatId,
+      `${icon} Propuesta: ${item.type} "${item.name}"${item.replaces ? " (reemplaza la aprendida)" : ""}\n${item.reason}\nEvidencia: ${item.evidence || "—"}\n\n${item.content.slice(0, 1500)}${item.content.length > 1500 ? "\n…" : ""}`,
+      {
+        keyboard: [
+          [
+            { text: "✅ Aplicar", callback_data: `apply:${item.id}` },
+            { text: "✖️ Descartar", callback_data: `drop:${item.id}` },
+          ],
+        ],
+      },
+    );
+  }
+  save();
+  return say(
+    chatId,
+    `${rejected.length ? `Descarté ${rejected.length} propuesta(s) que no pasan la validación:\n${rejected.join("\n")}\n\n` : ""}${summary}`,
+  );
+}
+
+async function handleProposal(chatId, query, action, id) {
+  const chat = state.chat(chatId);
+  const item = (chat.proposals ?? []).find((entry) => entry.id === id);
+  if (!item || item.status !== "pending")
+    return telegram.answerCallback(query.id, "Ya no está pendiente");
+  const who = query.from?.username ?? query.from?.id;
+  if (action === "drop") {
+    item.status = "dropped";
+    save();
+    await telegram.answerCallback(query.id, "Descartada");
+    return say(chatId, `✖️ Propuesta "${item.name}" descartada por ${who}.`);
+  }
+  try {
+    if (item.type === "guardrail") quality.addGuardrail(item.content);
+    else if (item.type === "skill") {
+      quality.writeSkill(item.name, item.content);
+      installLearnedSkills(quality, SKILL_TARGETS);
+    } else quality.writeCase(JSON.parse(item.content));
+  } catch (error) {
+    await telegram.answerCallback(query.id, "Falló");
+    return say(chatId, `⚠️ No pude aplicar "${item.name}": ${error.message}`);
+  }
+  item.status = "applied";
+  item.appliedBy = String(who ?? "");
+  save();
+  await telegram.answerCallback(query.id, "Aplicada");
+  const effect = {
+    guardrail: "Los agentes nuevos ya siguen esta regla.",
+    skill: "Los agentes nuevos ya tienen esta skill.",
+    eval: "Entra en el próximo /evals casos.",
+  }[item.type];
+  return say(
+    chatId,
+    `✅ Aplicada por ${who}: ${item.type} "${item.name}". ${effect}\n/evals casos mide si mejora.`,
+  );
+}
+
+/** Eval, judge and curator agents report through the loop, not as results. */
+async function qualityAgentDone(chatId, agent, raw) {
+  if (agent.evalCase) {
+    await evalCaseDone(chatId, agent, raw);
+    return true;
+  }
+  if (agent.judgeOf) {
+    await judgeDone(chatId, agent, raw);
+    return true;
+  }
+  if (agent.curator) {
+    await curatorDone(chatId, agent, raw);
+    return true;
+  }
+  return false;
 }
 
 /** After a lead's first answer, offer to hand out the plan it wrote. */
@@ -1967,6 +2790,8 @@ async function main() {
       `Telegram bridge → ${config.agentServerUrl} (chats: ${[...config.allowedChats].join(", ")})`,
     );
   }
+  const learned = installLearnedSkills(quality, SKILL_TARGETS);
+  if (learned.length) log(`Learned skills installed: ${learned.join(", ")}`);
   startChatMcpServer();
   registerChatMcp().catch((error) =>
     log("agent_chat MCP registration", error.message),
