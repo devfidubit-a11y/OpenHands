@@ -1897,8 +1897,9 @@ async function registerChatMcp() {
         ];
         if (existing?.enabled === false)
           return log("agent_chat MCP disabled by the user");
+        // POST creates; an existing entry is updated (PATCH) in place.
         const saved = await fetch(`${base}/api/settings/mcp/${CHAT_MCP_KEY}`, {
-          method: "POST",
+          method: existing ? "PATCH" : "POST",
           headers,
           body: JSON.stringify({
             url: `http://127.0.0.1:${config.chatMcpPort}/mcp`,
