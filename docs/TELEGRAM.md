@@ -32,6 +32,7 @@ flowchart LR
    ```
 
    Send `/whoami` to the bot (or in the group, `/whoami@YourBot`). Then stop it.
+
 4. **Run it for real:**
 
    ```bash
@@ -47,11 +48,11 @@ The desktop app starts the bridge on its own. You don't need a terminal, a
 session key or a server URL. On first launch it creates a commented
 `telegram.env` file:
 
-| OS | Location |
-| --- | --- |
-| macOS | `~/Library/Application Support/OpenHands Agent Canvas/telegram.env` |
-| Windows | `%APPDATA%\OpenHands Agent Canvas\telegram.env` |
-| Linux | `~/.config/OpenHands Agent Canvas/telegram.env` |
+| OS      | Location                                                            |
+| ------- | ------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/OpenHands Agent Canvas/telegram.env` |
+| Windows | `%APPDATA%\OpenHands Agent Canvas\telegram.env`                     |
+| Linux   | `~/.config/OpenHands Agent Canvas/telegram.env`                     |
 
 1. Set `TELEGRAM_BOT_TOKEN`, then restart the app. The bot is now in setup mode.
 2. Send `/whoami` to the bot. Put the id it returns in
@@ -65,19 +66,19 @@ In Docker, the same variables go in `.env` (see [DEPLOY.md](DEPLOY.md)).
 
 ### Environment variables
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | — (required) | Bot token from `@BotFather`. |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | empty = setup mode | Comma-separated chat ids that may drive agents. |
-| `TELEGRAM_ALLOWED_USER_IDS` | empty = anyone in an allowed chat | Optionally limit control to these Telegram user ids. |
-| `OH_AGENT_SERVER_URL` | `http://127.0.0.1:18000` | Agent Server base URL. |
-| `OH_SESSION_API_KEY` | — | The Agent Server session key, if it has one (`SESSION_API_KEY` also works). |
-| `OH_AGENT_PROFILE` | server's active profile | Agent Profile (name or id) for new agents. |
-| `OH_WORKING_DIR` | `workspace/project` | Workspace directory for new conversations. |
-| `TELEGRAM_BRIDGE_STATE` | `.telegram-bridge-state.json` | Where the chat → agent mapping is stored. |
-| `TELEGRAM_BRIDGE_POLL_MS` | `4000` | How often agent status is checked. |
-| `TELEGRAM_API_BASE` | `https://api.telegram.org` | Bot API base URL, for a local Bot API server or tests. |
-| `TELEGRAM_TIMEZONE` | `TZ`, else `UTC` | Time zone for `/schedule` and `/bot` times, e.g. `America/Bogota`. |
+| Variable                    | Default                           | Meaning                                                                     |
+| --------------------------- | --------------------------------- | --------------------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`        | — (required)                      | Bot token from `@BotFather`.                                                |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | empty = setup mode                | Comma-separated chat ids that may drive agents.                             |
+| `TELEGRAM_ALLOWED_USER_IDS` | empty = anyone in an allowed chat | Optionally limit control to these Telegram user ids.                        |
+| `OH_AGENT_SERVER_URL`       | `http://127.0.0.1:18000`          | Agent Server base URL.                                                      |
+| `OH_SESSION_API_KEY`        | —                                 | The Agent Server session key, if it has one (`SESSION_API_KEY` also works). |
+| `OH_AGENT_PROFILE`          | server's active profile           | Agent Profile (name or id) for new agents.                                  |
+| `OH_WORKING_DIR`            | `workspace/project`               | Workspace directory for new conversations.                                  |
+| `TELEGRAM_BRIDGE_STATE`     | `.telegram-bridge-state.json`     | Where the chat → agent mapping is stored.                                   |
+| `TELEGRAM_BRIDGE_POLL_MS`   | `4000`                            | How often agent status is checked.                                          |
+| `TELEGRAM_API_BASE`         | `https://api.telegram.org`        | Bot API base URL, for a local Bot API server or tests.                      |
+| `TELEGRAM_TIMEZONE`         | `TZ`, else `UTC`                  | Time zone for `/schedule` and `/bot` times, e.g. `America/Bogota`.          |
 
 > [!WARNING]
 > Agents can run shell commands on the Agent Server machine. Anyone who can post
@@ -103,23 +104,23 @@ Replies to an agent's message and `@name message` always go to that agent.
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `/new <task>` | Starts a new agent with the task and makes it the active one. |
-| `/new @name <task>` | The same, with a name you can address (`@name`). |
-| `/team [@name] <task>` | Starts a **lead** agent that studies the project and splits the work into up to 6 subtasks. Its plan comes with a **Repartir** (distribute) button that starts one sub-agent per subtask. |
-| `/dispatch` + lines | Hands out tasks yourself, one per line: `@name task`. An existing agent with that name gets a message; a new name starts a new agent. |
-| `/dir [path]` | Shows or sets the folder the next agents work in, e.g. `/dir /documents/dracma-web`. `/dir reset` goes back to the default. |
-| `/agents` | Lists this chat's agents with their status. ▶️ marks the active one. |
-| `/use <name or number>` | Changes the active agent. |
-| `@name <message>` | Sends the message to that agent. |
-| plain text | Goes to the active agent (in private chats, or when replying/mentioning in groups). |
-| reply to an agent's message | Goes to the agent that wrote it. |
-| `/all <message>` | Broadcasts to every agent in the chat. |
-| `/status [name]`, `/result [name]` | Shows status, or the agent's last final answer. |
-| `/stop [name]` | Pauses an agent. |
-| `/forget <name>` | Stops tracking an agent here. The conversation stays on the server. |
-| `/profiles`, `/profile <name>` | Lists Agent Profiles, or picks one for this chat's next `/new`. |
+| Command                            | What it does                                                                                                                                                                              |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/new <task>`                      | Starts a new agent with the task and makes it the active one.                                                                                                                             |
+| `/new @name <task>`                | The same, with a name you can address (`@name`).                                                                                                                                          |
+| `/team [@name] <task>`             | Starts a **lead** agent that studies the project and splits the work into up to 6 subtasks. Its plan comes with a **Repartir** (distribute) button that starts one sub-agent per subtask. |
+| `/dispatch` + lines                | Hands out tasks yourself, one per line: `@name task`. An existing agent with that name gets a message; a new name starts a new agent.                                                     |
+| `/dir [path]`                      | Shows or sets the folder the next agents work in, e.g. `/dir /documents/dracma-web`. `/dir reset` goes back to the default.                                                               |
+| `/agents`                          | Lists this chat's agents with their status. ▶️ marks the active one.                                                                                                                      |
+| `/use <name or number>`            | Changes the active agent.                                                                                                                                                                 |
+| `@name <message>`                  | Sends the message to that agent.                                                                                                                                                          |
+| plain text                         | Goes to the active agent (in private chats, or when replying/mentioning in groups).                                                                                                       |
+| reply to an agent's message        | Goes to the agent that wrote it.                                                                                                                                                          |
+| `/all <message>`                   | Broadcasts to every agent in the chat.                                                                                                                                                    |
+| `/status [name]`, `/result [name]` | Shows status, or the agent's last final answer.                                                                                                                                           |
+| `/stop [name]`                     | Pauses an agent.                                                                                                                                                                          |
+| `/forget <name>`                   | Stops tracking an agent here. The conversation stays on the server.                                                                                                                       |
+| `/profiles`, `/profile <name>`     | Lists Agent Profiles, or picks one for this chat's next `/new`.                                                                                                                           |
 
 ### Natural chat
 
@@ -135,6 +136,53 @@ works.
 @BotFather send `/setprivacy`, pick the bot, choose **Disable**, then remove
 the bot from the group and add it again (or make it an admin). The bridge
 logs a warning at start while privacy mode is on.
+
+**Who the bot answers in a group.** With privacy mode off, every message
+reaches the bridge, including people talking to each other. The bot answers
+when the message is for the team:
+
+- a reply to one of its messages
+- an @mention of the bot or of an agent (`@web`, or just `web …`)
+- words like "bot", "equipo", "coordinador" or "agentes"
+- a follow-up from the same person within 3 minutes of the bot's last answer
+- any message while only one person is talking with the bot
+
+Everything else is read as context. `@coordinador` gets the recent chat
+lines it hasn't seen, so "equipo, ¿qué pasó?" can answer about what Luis said
+earlier. When the coordinator decides a message needs nothing from the team,
+it replies `NOOP` and nothing is posted.
+
+**Less noise.** An idle coordinator only shows "typing…" while it works:
+there's no "received" or "working…" message. A short note appears only when
+your message waits behind other work or comes from a schedule. Subagents
+still announce themselves, and long runs still get progress notices.
+
+### Ship: from the work to a reviewed PR
+
+`/ship [notes]` takes the work to a pull request. So do the plain words
+"ship", "shipéalo", "súbelo", and "abre / haz / crea el PR".
+
+**Who ships it:** the agent whose message you reply to; otherwise the last
+agent that reported work in the chat; otherwise `@coordinador`.
+
+**The agent's steps:**
+
+1. Moves to a feature branch with `safe-branch start`. It never commits to
+   the default branch.
+2. Runs `safe-branch check`. If it flags anything that needs your consent,
+   the agent stops and asks.
+3. Makes small Conventional Commits (`safe-branch split`, then
+   `safe-branch commits`).
+4. Runs the project's lint, type check, tests and build.
+5. Pushes the branch and opens the PR with `gh` (What, Why, How, Testing,
+   Risk).
+6. Reviews its own diff.
+7. Watches CI with `gh pr checks --watch`, fixing failures for up to 3
+   rounds.
+8. Replies with the PR link, the CI status and the `VERIFICACIÓN` line.
+
+It never merges and never enables auto-merge: merging is your call. The
+container's `gh` must be logged in (`GH_TOKEN`).
 
 ### Agents talk to agents (and humans) in the chat
 
@@ -155,13 +203,13 @@ the council's rounds instead.
 the bridge on `127.0.0.1:18790` (`TELEGRAM_CHAT_MCP_PORT`, 0 = off) and
 registered for every OpenHands and ACP agent:
 
-| Tool | Does |
-| --- | --- |
-| `chat_agents` | Who is in the chat, their role and status |
-| `chat_history` | The last 40 messages of the chat (humans and agents) |
-| `chat_send` | Message another agent; posted as `💬 @a → @b`, its answer comes back as a new message |
-| `chat_post` | A short update for the humans (`🤖 @a: …`); replies go back to the agent |
-| `chat_ask_human` | A question for the humans (`❓ @a pregunta: …`); reply to it to answer |
+| Tool             | Does                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `chat_agents`    | Who is in the chat, their role and status                                             |
+| `chat_history`   | The last 40 messages of the chat (humans and agents)                                  |
+| `chat_send`      | Message another agent; posted as `💬 @a → @b`, its answer comes back as a new message |
+| `chat_post`      | A short update for the humans (`🤖 @a: …`); replies go back to the agent              |
+| `chat_ask_human` | A question for the humans (`❓ @a pregunta: …`); reply to it to answer                |
 
 So agents coordinate on their own: the UX agent asks `@pen` to fix a
 spacing issue, `@frontend` tells `@qa` a branch is ready, anyone asks you
@@ -202,20 +250,20 @@ Each one sends @coordinador a request that names the right skill, in the
 current `/dir` folder. They report first and change code only when you say
 so (fixes go through feature branches and PRs).
 
-| Command | Skill | What you get |
-| --- | --- | --- |
-| `/scan <type> [focus]` | `code-scans` | Ranked findings with `path:line`. Types: performance, database, coverage, dead-code, quality, cleanup, telemetry, accessibility, compliance, security, dependencies, custom. Then "arregla S1 y S3". |
-| `/review <PR>` | `pr-reviewer` | Bugs, Flags and Security findings, test results and a verdict. Posting to GitHub or auto-fixing only when you ask. |
-| `/wiki [notes]` | `repo-wiki` | A wiki in `docs/wiki/` (PR) with Mermaid architecture, data model and API pages, linked to the code. Steer it with `.openhands/wiki.json`. |
-| `/ask <question>` | `codebase-qa` | A cited answer, read-only. |
-| `/plan <goal>` | `codebase-qa` | Impact analysis, steps, open questions and a ready-to-send task prompt. |
-| `/latency [focus]` | `latency-optimizer` | Fixes the slowest endpoint, page, job or query and opens one small PR with before and after numbers. |
-| `/security [focus]` | `security-audit` | OWASP, authz, secrets, dependencies and config findings, read-only. |
-| `/migrate <from → to>` | `migration-modernization` | A step-by-step plan for approval, then one PR per step. |
-| `/insights [name]` | `session-insights` | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory. |
-| `/design <task>` | `pencil-design` | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md). |
-| `/pen <anything>` or "pen, …" | `pencil-design` | Talk to pen.dev in plain language. Photos ("foto de la pantalla wallet únicamente") and "lista" are answered by the bridge directly; changes ("arregla el header de wallet") go to the chat's design agent `@pen`, which edits live in the Pen app and the bridge then posts photos of the frames it changed. |
-| `/ux [screen]` or "pen, revisa la ux de …" | `ux-design`, `pencil-design` | The chat's `@ux` agent reviews the screens (hierarchy, heuristics, WCAG AA, spacing, type, tokens, copy, states), ranks the findings, and optimizes a copy `· UX v2` of each screen (originals untouched). The bridge posts before/after photos. |
+| Command                                    | Skill                        | What you get                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/scan <type> [focus]`                     | `code-scans`                 | Ranked findings with `path:line`. Types: performance, database, coverage, dead-code, quality, cleanup, telemetry, accessibility, compliance, security, dependencies, custom. Then "arregla S1 y S3".                                                                                                          |
+| `/review <PR>`                             | `pr-reviewer`                | Bugs, Flags and Security findings, test results and a verdict. Posting to GitHub or auto-fixing only when you ask.                                                                                                                                                                                            |
+| `/wiki [notes]`                            | `repo-wiki`                  | A wiki in `docs/wiki/` (PR) with Mermaid architecture, data model and API pages, linked to the code. Steer it with `.openhands/wiki.json`.                                                                                                                                                                    |
+| `/ask <question>`                          | `codebase-qa`                | A cited answer, read-only.                                                                                                                                                                                                                                                                                    |
+| `/plan <goal>`                             | `codebase-qa`                | Impact analysis, steps, open questions and a ready-to-send task prompt.                                                                                                                                                                                                                                       |
+| `/latency [focus]`                         | `latency-optimizer`          | Fixes the slowest endpoint, page, job or query and opens one small PR with before and after numbers.                                                                                                                                                                                                          |
+| `/security [focus]`                        | `security-audit`             | OWASP, authz, secrets, dependencies and config findings, read-only.                                                                                                                                                                                                                                           |
+| `/migrate <from → to>`                     | `migration-modernization`    | A step-by-step plan for approval, then one PR per step.                                                                                                                                                                                                                                                       |
+| `/insights [name]`                         | `session-insights`           | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory.                                                                                                                                                                                |
+| `/design <task>`                           | `pencil-design`              | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md).                                                                                                                            |
+| `/pen <anything>` or "pen, …"              | `pencil-design`              | Talk to pen.dev in plain language. Photos ("foto de la pantalla wallet únicamente") and "lista" are answered by the bridge directly; changes ("arregla el header de wallet") go to the chat's design agent `@pen`, which edits live in the Pen app and the bridge then posts photos of the frames it changed. |
+| `/ux [screen]` or "pen, revisa la ux de …" | `ux-design`, `pencil-design` | The chat's `@ux` agent reviews the screens (hierarchy, heuristics, WCAG AA, spacing, type, tokens, copy, states), ranks the findings, and optimizes a copy `· UX v2` of each screen (originals untouched). The bridge posts before/after photos.                                                              |
 
 ### Expert council: parallel work, debate and decisions
 
@@ -253,19 +301,19 @@ councils in progress. `/bot consejo` runs one every Thursday.
 A **bot** is a scheduled request that owns one outcome. `/bots` lists the
 templates; `/bot <template> [when]` turns one on for this chat and folder:
 
-| Bot | Default | Does |
-| --- | --- | --- |
-| `latency` | Monday 09:00 | `/latency`: one measured speed-up PR a week |
-| `scans` | Wednesday 09:00 | `/scan quality` |
-| `security` | Friday 09:00 | `/security` (read-only) |
-| `deps` | Monday 08:00 | `/scan dependencies` |
-| `consejo` | Thursday 10:00 | An expert council proposes the week's top 3 product improvements |
-| `wiki` | Sunday 20:00 | `/wiki`, updating only pages whose code changed |
-| `qa` | weekdays 18:00 | Tests the day's PRs in an isolated container |
+| Bot        | Default         | Does                                                             |
+| ---------- | --------------- | ---------------------------------------------------------------- |
+| `latency`  | Monday 09:00    | `/latency`: one measured speed-up PR a week                      |
+| `scans`    | Wednesday 09:00 | `/scan quality`                                                  |
+| `security` | Friday 09:00    | `/security` (read-only)                                          |
+| `deps`     | Monday 08:00    | `/scan dependencies`                                             |
+| `consejo`  | Thursday 10:00  | An expert council proposes the week's top 3 product improvements |
+| `wiki`     | Sunday 20:00    | `/wiki`, updating only pages whose code changed                  |
+| `qa`       | weekdays 18:00  | Tests the day's PRs in an isolated container                     |
 
 `/schedule <when> <text or /command>` schedules anything, e.g.
 `/schedule laborables 08:30 /scan coverage src/` or
-`/schedule cada 6h revisa si hay PRs nuevos y resúmelos`. *When* is
+`/schedule cada 6h revisa si hay PRs nuevos y resúmelos`. _When_ is
 `diario HH:MM`, `laborables HH:MM`, a weekday (`lunes 09:00`, also English),
 or `cada 30m|6h|1d` (15 minutes at least). `/schedule` lists them,
 `/schedule rm <id>` removes one and `/schedule run <id>` runs it now. Times use
@@ -331,14 +379,14 @@ Both work from Telegram. Make the Agent Profile you want the active one (or pass
 Every result has 👍/👎 buttons. With 👎 the bot asks what went wrong and sends
 your note to the agent so it fixes the result.
 
-| Command | What it does |
-| --- | --- |
-| `/feedback` | Ratings per agent |
-| `/feedback @agent <note>` | Leave a note |
-| `/evals` | @juez scores the recent work |
-| `/evals casos` | Run the eval cases in scratch folders and compare with the last run |
-| `/evals skills` | Lint the skills |
-| `/mejora` | @curador proposes new skills, guardrail rules or eval cases from the evidence; you approve each one |
+| Command                   | What it does                                                                                        |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| `/feedback`               | Ratings per agent                                                                                   |
+| `/feedback @agent <note>` | Leave a note                                                                                        |
+| `/evals`                  | @juez scores the recent work                                                                        |
+| `/evals casos`            | Run the eval cases in scratch folders and compare with the last run                                 |
+| `/evals skills`           | Lint the skills                                                                                     |
+| `/mejora`                 | @curador proposes new skills, guardrail rules or eval cases from the evidence; you approve each one |
 
 Answers are checked before they're posted: secrets are hidden, risky commands
 are flagged, and so is a code change without a `VERIFICACIÓN` line.

@@ -439,6 +439,11 @@ export function buildCoordinatorPrompt(
     "  snapshot, visual regression, performance and Core Web Vitals.",
     "  The bridge creates those agents immediately and sends you their reports",
     "  when they finish. Reusing a name sends that agent a follow-up.",
+    "- You are in a group chat: if the message is people talking to each other",
+    "  and nobody needs anything from the team, reply exactly NOOP (nothing else).",
+    "- When the user asks to ship or open a PR, follow the ship steps: branch,",
+    "  small commits, safe-branch check, push, gh pr create, self-review, CI green.",
+    "  Never merge the PR yourself.",
     "- Follow the change-safety-guard skill: if the work would delete, replace,",
     "  or touch data, secrets, auth, payments, infra or dependencies, ask the user",
     "  first and do not assign it until they agree.",
@@ -2429,4 +2434,148 @@ export function buildGreeting({
     "• «pen, foto de la pantalla wallet»",
     "• «revisa la ux del dashboard»",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Natural group conversation: when to answer, chat context, ship
+// ---------------------------------------------------------------------------
+
+/** Distinct people (not the bot) who wrote in the log within `windowMs`. */
+export function recentHumans(
+  log = [],
+  now = Date.now(),
+  windowMs = 15 * 60_000,
+) {
+  return new Set(
+    log
+      .filter((item) => item.who !== "bot" && now - item.at <= windowMs)
+      .map((item) => item.who),
+  ).size;
+}
+
+const ADDRESS_RE =
+  /(^|[^\p{L}\p{N}_])(bot|coordinador|coordinadora|equipo|agentes?|team|openhands|asistente)([^\p{L}\p{N}_]|$)/u;
+
+/**
+ * In a group with privacy mode off every message reaches the bridge, also
+ * people talking to each other. Answer a private chat, a reply to the bot,
+ * a message that names the bot, the team or one of its agents, a follow-up
+ * right after the bot spoke to the same person, or any message while only
+ * one person is talking with the bot. Otherwise stay quiet (it still goes to
+ * the chat log, so the team has the context).
+ */
+export function shouldAnswer({
+  chatType = "private",
+  text = "",
+  who = "",
+  botUsername = "",
+  agentNames = [],
+  isReplyToBot = false,
+  log = [],
+  now = Date.now(),
+}) {
+  if (chatType === "private" || isReplyToBot) return true;
+  const folded = foldText(text);
+  if (botUsername && folded.includes(`@${foldText(botUsername)}`)) return true;
+  if (ADDRESS_RE.test(folded)) return true;
+  for (const name of agentNames) {
+    const slug = foldText(name);
+    if (
+      slug &&
+      new RegExp(
+        `(^|[^\\p{L}\\p{N}_])@?${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}_]|$)`,
+        "u",
+      ).test(folded)
+    )
+      return true;
+  }
+  // Earlier entries, not this message (already appended to the log).
+  const before = log.filter(
+    (item) =>
+      !(
+        item.who === who &&
+        item.text === String(text).slice(0, 500) &&
+        now - item.at < 5_000
+      ),
+  );
+  const last = before.at(-1);
+  if (last?.who === "bot" && now - last.at < 3 * 60_000) {
+    const asker = [...before].reverse().find((item) => item.who !== "bot");
+    if (!asker || asker.who === who) return true;
+  }
+  return recentHumans(before, now) <= 1;
+}
+
+/**
+ * Recent chat lines the coordinator hasn't seen (since `sinceAt`), so it
+ * answers in context: who said what, including what people said to each
+ * other and what the bot already posted.
+ */
+export function buildChatContext(
+  log = [],
+  sinceAt = 0,
+  { limit = 12, skipLast = true } = {},
+) {
+  const items = log.filter((item) => item.at > sinceAt);
+  if (skipLast) items.pop();
+  const recent = items.slice(-limit);
+  if (!recent.length) return "";
+  return [
+    "Recent group chat (context; answer only the user request below):",
+    ...recent.map(
+      (item) =>
+        `- ${item.who === "bot" ? "bridge/agents" : item.who}: ${item.text.replace(/\s+/g, " ").slice(0, 240)}`,
+    ),
+    "",
+  ].join("\n");
+}
+
+const SHIP_RE =
+  /^(?:(?:por favor|porfa|dale|ok|listo|va)[, ]+)?(?:ship(?:ea|ealo|ear|pealo|it)?|haz (?:el )?ship|shipealo|(?:abre|haz|crea|manda|arma|sube) (?:el|un|la) (?:pr|pull request)|sube (?:los cambios|esto|eso|lo hecho)|subelo|abre pr)\b[\s:,.-]*(.*)$/s;
+
+/** "ship", "shipéalo y revisa el CI", "abre el PR con el fix" → extra text or null. */
+export function shipIntent(text) {
+  const match = SHIP_RE.exec(foldText(text).trim());
+  if (!match) return null;
+  // Keep the user's own words (accents) for the extra instructions.
+  const original = String(text ?? "").trim();
+  const extra = match[1]
+    ? original.slice(original.length - match[1].length).trim()
+    : "";
+  return { extra };
+}
+
+/** The ship protocol: from local changes to a reviewed PR with green CI. */
+export function buildShipPrompt(extra = "", { workingDir = "" } = {}) {
+  return [
+    "SHIP: take this work to a reviewed pull request with green CI. Follow the feature-branch-pr, change-safety-guard and code-quality-gate skills.",
+    workingDir
+      ? `Repository folder: ${workingDir} (or the worktree you used).`
+      : "",
+    "1. Find the changes of this task (`git status`, `safe-branch branches`). If you are on the default branch, `safe-branch start <slug>` first (with --worktree when other agents share the checkout). Never commit to the default branch.",
+    "2. `safe-branch check`. Exit code 2: STOP, list each item and ask me; do nothing else until I answer.",
+    "3. Commit in small Conventional Commits (`safe-branch split` to group), then `safe-branch commits` and fix what it reports (rewrite only unpushed commits).",
+    "4. Verify: the project's own lint, type check, tests and build for what changed.",
+    "5. Push the branch (`git push -u origin HEAD`; never force, never the default branch) and open the PR with `gh pr create` (What / Why / How / Testing / Risk; draft while checks fail). If it already has a PR, update it.",
+    "6. Review your own PR diff as a strict reviewer (pr-reviewer skill) and fix real problems in new commits.",
+    "7. CI: `gh pr checks --watch --fail-fast` (up to 20 minutes). On a failure read `gh run view --log-failed`, fix, push and watch again, at most 3 rounds. If the base moved and conflicts, merge the base and resolve keeping both sides' behavior.",
+    "8. Never merge the PR and never enable auto-merge: merging is my call.",
+    "Final answer, short: the PR link, branch, commits, CI status and anything left for me; then the VERIFICACIÓN line.",
+    extra ? `My extra instructions: ${extra}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** A short, varied acknowledgment when the coordinator is still busy. */
+export function queuedAck(name, text = "") {
+  const options = [
+    `Anotado 👍 @${name} termina lo que está haciendo y sigue con esto.`,
+    `Va, en cola: @${name} lo toma apenas acabe lo actual.`,
+    `Recibido. @${name} está con otra cosa; esto va justo después.`,
+  ];
+  let hash = 0;
+  for (const char of String(text))
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return options[hash % options.length];
 }

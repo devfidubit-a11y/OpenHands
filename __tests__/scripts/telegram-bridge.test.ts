@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildChatContext,
+  buildShipPrompt,
+  queuedAck,
+  shipIntent,
+  shouldAnswer,
   AgentServerClient,
   BOT_TEMPLATES,
   BridgeState,
@@ -1322,5 +1327,100 @@ describe("natural chat", () => {
 
   it("tells the coordinator to talk like a teammate", () => {
     expect(buildCoordinatorPrompt("hola")).toMatch(/teammate/);
+  });
+});
+
+describe("natural group conversation", () => {
+  const now = 1_000_000_000;
+  const log = (entries: [string, string, number][]) =>
+    entries.map(([who, text, ago]) => ({ who, text, at: now - ago }));
+
+  it("answers when spoken to, stays quiet when people talk to each other", () => {
+    const busy = log([
+      ["Ana", "¿vamos a almorzar?", 60_000],
+      ["Luis", "sí, a la 1", 30_000],
+      ["Ana", "perfecto nos vemos", 0],
+    ]);
+    const base = {
+      chatType: "supergroup",
+      who: "Ana",
+      botUsername: "dracma_bot",
+      agentNames: ["coordinador", "web"],
+      log: busy,
+      now,
+    };
+    expect(shouldAnswer({ ...base, text: "perfecto nos vemos" })).toBe(false);
+    expect(shouldAnswer({ ...base, text: "equipo, revisen el login" })).toBe(
+      true,
+    );
+    expect(shouldAnswer({ ...base, text: "@dracma_bot ¿cómo va?" })).toBe(true);
+    expect(shouldAnswer({ ...base, text: "web arregla el header" })).toBe(true);
+    expect(shouldAnswer({ ...base, text: "ok", isReplyToBot: true })).toBe(
+      true,
+    );
+    expect(shouldAnswer({ ...base, chatType: "private", text: "ok" })).toBe(
+      true,
+    );
+  });
+
+  it("follows up with the same person and talks freely 1:1 in a group", () => {
+    const followUp = log([
+      ["Luis", "hola", 200_000],
+      ["Ana", "revisa el checkout", 90_000],
+      ["bot", "Listo, el checkout pasa los tests.", 30_000],
+    ]);
+    const base = { chatType: "supergroup", log: followUp, now };
+    expect(shouldAnswer({ ...base, who: "Ana", text: "y el carrito?" })).toBe(
+      true,
+    );
+    expect(shouldAnswer({ ...base, who: "Luis", text: "y el carrito?" })).toBe(
+      false,
+    );
+    const alone = log([["Ana", "necesito un reporte", 60_000]]);
+    expect(
+      shouldAnswer({
+        chatType: "group",
+        who: "Ana",
+        text: "de ventas",
+        log: alone,
+        now,
+      }),
+    ).toBe(true);
+  });
+
+  it("gives the coordinator the chat it hasn't seen", () => {
+    const entries = log([
+      ["Ana", "viejo", 500_000],
+      ["Luis", "el deploy falló anoche", 60_000],
+      ["Ana", "equipo, ¿qué pasó?", 0],
+    ]);
+    const context = buildChatContext(entries, now - 100_000);
+    expect(context).toContain("Luis: el deploy falló anoche");
+    expect(context).not.toContain("viejo");
+    expect(context).not.toContain("¿qué pasó?");
+    expect(buildChatContext([], 0)).toBe("");
+  });
+
+  it("recognizes ship in plain words and builds the ship protocol", () => {
+    expect(shipIntent("ship")).toEqual({ extra: "" });
+    expect(shipIntent("Shipéalo y revisa el CI")).toEqual({
+      extra: "y revisa el CI",
+    });
+    expect(shipIntent("abre el PR con el fix del login")).toEqual({
+      extra: "con el fix del login",
+    });
+    expect(shipIntent("dale, súbelo")).toEqual({ extra: "" });
+    expect(shipIntent("sube la imagen a s3")).toBeNull();
+    expect(shipIntent("shipping news")).toBeNull();
+    const prompt = buildShipPrompt("solo el login", { workingDir: "/w" });
+    expect(prompt).toContain("safe-branch check");
+    expect(prompt).toContain("gh pr checks --watch");
+    expect(prompt).toContain("Never merge the PR");
+    expect(prompt).toContain("My extra instructions: solo el login");
+    expect(queuedAck("coordinador", "x")).toContain("@coordinador");
+  });
+
+  it("lets the coordinator stay quiet with NOOP", () => {
+    expect(buildCoordinatorPrompt("hola")).toContain("reply exactly NOOP");
   });
 });

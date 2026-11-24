@@ -108,7 +108,12 @@ import {
   nextRun,
   parseScheduleArgs,
   summarizeEvents,
+  buildChatContext,
   buildCoordinatorPrompt,
+  buildShipPrompt,
+  queuedAck,
+  shipIntent,
+  shouldAnswer,
   buildIntegrationPrompt,
   buildLeadPrompt,
   buildMemberPrompt,
@@ -132,6 +137,12 @@ Modo automático (activado): escribe lo que necesitas en lenguaje normal.
 @coordinador responde o planifica, el bot crea los subagentes solo, y al
 terminar @coordinador integra los resultados y te da el resumen.
 /auto off — vuelve al modo manual (el texto va al agente activo)
+En grupos respondo cuando me hablan (bot, equipo, @coordinador, @agente, una
+respuesta a mi mensaje); la charla entre personas la leo como contexto.
+
+/ship [notas] — o «shipéalo», «abre el PR»: el agente que hizo el trabajo lo
+  lleva a un PR revisado con la CI en verde (rama, commits, push, PR, revisión,
+  CI). Nunca fusiona: eso lo decides tú.
 
 /new <tarea> — crea un agente nuevo con esa tarea
 /new @nombre <tarea> — igual, con nombre propio
@@ -198,6 +209,7 @@ Bots y tareas programadas:
 /whoami — muestra el id de este chat`;
 
 const COMMANDS = [
+  ["ship", "Llevar el trabajo a un PR revisado con CI verde"],
   ["auto", "Modo automático on/off"],
   ["new", "Crear un agente con una tarea"],
   ["team", "Líder que planifica y reparte subtareas"],
@@ -254,7 +266,11 @@ const KNOWN_COMMANDS = new Set([
   "improve",
   "schedules",
   "whoami",
+  "shipit",
 ]);
+
+/** Set at startup (getMe): used to tell replies and @mentions to the bot. */
+let botIdentity = null;
 
 const config = loadConfig();
 const state = BridgeState.load(config.statePath);
@@ -353,9 +369,13 @@ async function reportProgress(chatId, agent) {
   if (!agent.runningSince) {
     agent.runningSince = now;
     agent.lastProgressAt = now;
-    await say(chatId, `▶️ @${agent.name} está trabajando…`, {}, agent);
+    // The coordinator just shows "typing…"; subagents announce themselves.
+    if (!agent.coordinator)
+      await say(chatId, `▶️ @${agent.name} está trabajando…`, {}, agent);
     return;
   }
+  if (agent.coordinator)
+    telegram.sendChatAction(chatId, "typing").catch(() => {});
   if (!config.progressMs || now - agent.lastProgressAt < config.progressMs)
     return;
   agent.lastProgressAt = now;
@@ -400,8 +420,12 @@ async function routeToCoordinator(
 ) {
   const chat = state.chat(chatId);
   const dir = workingDir ?? workingDirFor(chat);
-  const prompt = buildCoordinatorPrompt(text, { workingDir: dir });
   let lead = coordinatorOf(chat);
+  const busy = ["running", "pending"].includes(lead?.lastStatus);
+  const context = buildChatContext(chat.log ?? [], lead?.contextAt ?? 0, {
+    skipLast: !label,
+  });
+  const prompt = `${context}${buildCoordinatorPrompt(text, { workingDir: dir })}`;
   if (!lead) {
     lead = await createAgent(chatId, {
       name: "coordinador",
@@ -418,16 +442,66 @@ async function routeToCoordinator(
     awaitingPlan: true,
     rounds: 0,
     teamNotified: false,
+    contextAt: Date.now(),
   });
   chat.active = lead.id;
   save();
+  // An idle coordinator just answers (the chat shows "typing…"); a note only
+  // when the request waits behind other work or comes from a schedule.
+  if (label)
+    return say(
+      chatId,
+      `🧭 ${label} → @${lead.name} en ${dir}. Te iré avisando.`,
+      {},
+      lead,
+    );
+  if (busy)
+    return say(
+      chatId,
+      queuedAck(lead.name, text),
+      messageId ? { replyTo: messageId } : {},
+      lead,
+    );
+  telegram.sendChatAction(chatId, "typing").catch(() => {});
+  return [];
+}
+
+/**
+ * /ship or «shipéalo»: the agent that did the work takes it to a reviewed
+ * PR with green CI. A reply picks that agent; otherwise the latest one that
+ * reported work here; otherwise the coordinator.
+ */
+async function shipCommand(chatId, extra, messageId, message = null) {
+  const chat = state.chat(chatId);
+  const replied = message?.reply_to_message
+    ? state.agentForReply(chatId, message.reply_to_message.message_id)
+    : null;
+  const helpers = /^(juez|curador|eval-)/;
+  const lastWorker = [...(chat.recentWork ?? [])]
+    .reverse()
+    .map((item) => chat.agents.find((agent) => agent.id === item.agentId))
+    .find((agent) => agent && !helpers.test(agent.name));
+  const target = replied ?? lastWorker ?? coordinatorOf(chat);
+  const prompt = buildShipPrompt(String(extra ?? "").trim(), {
+    workingDir: target?.workingDir ?? workingDirFor(chat),
+  });
+  if (!target) {
+    await routeToCoordinator(chatId, prompt, messageId);
+    return say(
+      chatId,
+      "🚢 Ship en marcha con @coordinador: rama, commits, PR, revisión y CI. Te aviso con el enlace del PR.",
+    );
+  }
+  await server.sendMessage(target.id, prompt);
+  target.lastAsk = `ship ${String(extra ?? "")}`.trim();
+  target.shipping = true;
+  markPending(target);
+  save();
   return say(
     chatId,
-    label
-      ? `🧭 ${label} → @${lead.name} en ${dir}. Te iré avisando.`
-      : `🧭 @${lead.name} recibió tu petición. Si hace falta, repartirá el trabajo entre subagentes y te iré avisando.`,
+    `🚢 @${target.name} lleva su trabajo a un PR: rama, commits, push, revisión y CI hasta verde. Te paso el enlace; fusionar lo decides tú.`,
     messageId ? { replyTo: messageId } : {},
-    lead,
+    target,
   );
 }
 
@@ -856,6 +930,10 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
         messageId,
       );
 
+    case "ship":
+    case "shipit":
+      return shipCommand(chatId, args, messageId, message);
+
     case "feedback":
       return feedbackCommand(chatId, args);
 
@@ -981,6 +1059,30 @@ async function handleMessage(message) {
         message,
       );
     }
+  }
+  // People talking to each other in a group: read it as context, stay quiet.
+  const isReplyToBot =
+    Boolean(botIdentity) &&
+    message.reply_to_message?.from?.id === botIdentity.id;
+  if (
+    parsed.kind !== "addressed" &&
+    !shouldAnswer({
+      chatType: message.chat?.type,
+      text: message.text,
+      who: message.from?.first_name || message.from?.username || "humano",
+      botUsername: botIdentity?.username ?? "",
+      agentNames: room.agents.map((agent) => agent.name),
+      isReplyToBot,
+      log: room.log ?? [],
+    })
+  ) {
+    save();
+    return;
+  }
+  if (parsed.kind === "text") {
+    const ship = shipIntent(parsed.text);
+    if (ship)
+      return shipCommand(chatId, ship.extra, message.message_id, message);
     // The answer to "¿Para qué armamos el equipo?".
     if (room.pendingTeam && !message.reply_to_message) {
       return handleCommand(
@@ -1729,6 +1831,13 @@ async function watchAgents() {
         if (event === "done") agent.seenRunning = true;
         if (event === "done") {
           const raw = await server.finalResponse(agent.id).catch(() => "");
+          // The coordinator decided the message needed no answer.
+          if (agent.coordinator && /^\s*NOOP\s*$/.test(raw)) {
+            agent.awaitingPlan = false;
+            save();
+            continue;
+          }
+          delete agent.shipping;
           if (await qualityAgentDone(chatId, agent, raw)) continue;
           const response = await postResult(chatId, agent, raw);
           if (agent.awaitingPlan) await offerPlan(chatId, agent, response);
@@ -3117,6 +3226,7 @@ async function main() {
   let me;
   try {
     me = await telegram.getMe();
+    botIdentity = me;
   } catch (error) {
     throw new Error(
       `Telegram rejected TELEGRAM_BOT_TOKEN (${error.message}). Check the token from @BotFather.`,
