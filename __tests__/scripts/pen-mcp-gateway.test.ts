@@ -1,3 +1,4 @@
+// @ts-nocheck -- tests a plain-JS script: allowJs infers `= null` defaults as type null.
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { AddressInfo } from "node:net";

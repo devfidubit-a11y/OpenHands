@@ -1,3 +1,4 @@
+// @ts-nocheck -- tests a plain-JS script: allowJs infers `= null` defaults as type null.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // @ts-expect-error -- plain ESM script without type declarations

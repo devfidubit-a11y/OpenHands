@@ -1,3 +1,4 @@
+// @ts-nocheck -- tests a plain-JS script: allowJs infers `= null` defaults as type null.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -286,6 +286,7 @@ export function formatSyncReport({
   files,
   conflicts,
   commits = [],
+  applying = false,
 }) {
   const lines = [
     `## Upstream sync: ${upstream} → ${ours}`,
@@ -312,7 +313,11 @@ export function formatSyncReport({
       "Resolve them on a sync branch: keep our behavior and take upstream's on top; never drop either side blindly.",
     );
   } else
-    lines.push("Merges cleanly. Run with --apply to create the sync branch.");
+    lines.push(
+      applying
+        ? "Merges cleanly."
+        : "Merges cleanly. Run with --apply to create the sync branch.",
+    );
   return lines.join("\n");
 }
 

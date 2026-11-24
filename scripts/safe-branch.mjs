@@ -190,6 +190,7 @@ function sync(opts) {
     files,
     conflicts,
     commits,
+    applying: Boolean(opts.apply),
   });
   if (opts.json && !opts.apply) {
     console.log(
