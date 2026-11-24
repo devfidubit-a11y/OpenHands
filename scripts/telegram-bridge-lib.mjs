@@ -1379,6 +1379,12 @@ export const BOT_TEMPLATES = {
     description:
       "Cada semana @curador convierte el feedback y los evals en skills, reglas o casos nuevos; tú apruebas cada uno.",
   },
+  upstream: {
+    when: "martes 09:00",
+    text: "Mantén este fork al día con su upstream sin tocar nuestros cambios: corre `safe-branch sync` en el repo (con la skill feature-branch-pr). Si hay commits nuevos, `safe-branch sync --apply`, resuelve conflictos conservando nuestro comportamiento, corre lint, tipos, tests y build en la rama sync/… y repórtame qué entró, qué archivos tocamos ambos y el resultado. No fusiones a main ni hagas push sin mi OK.",
+    description:
+      "Cada semana trae los cambios del upstream a una rama sync/… verificada, sin tocar los nuestros; tú decides cuándo entra a main.",
+  },
   wiki: {
     when: "domingo 20:00",
     text: "/wiki actualiza solo las páginas cuyo código cambió",

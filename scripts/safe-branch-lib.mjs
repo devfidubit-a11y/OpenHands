@@ -243,3 +243,182 @@ export function formatReport({ base, branch, analysis, dirty = [] }) {
   }
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Upstream sync (fork maintenance), branches and commits
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits the paths each side changed since the merge base:
+ * ours only (must come out of the sync untouched), theirs only, and both
+ * (need a look even when git merges them on its own).
+ */
+export function classifySync(ours, theirs) {
+  const mine = new Set(ours);
+  const upstream = new Set(theirs);
+  return {
+    oursOnly: [...mine].filter((path) => !upstream.has(path)).sort(),
+    theirsOnly: [...upstream].filter((path) => !mine.has(path)).sort(),
+    both: [...mine].filter((path) => upstream.has(path)).sort(),
+  };
+}
+
+/**
+ * `git merge-tree --write-tree --name-only` output: the tree id, then (on
+ * conflict) the conflicted paths, a blank line and informational messages.
+ */
+export function parseMergeTree(text, exitCode = 0) {
+  const [tree = "", ...rest] = String(text ?? "").split("\n");
+  const end = rest.indexOf("");
+  const conflicts =
+    exitCode === 1 ? rest.slice(0, end < 0 ? rest.length : end) : [];
+  return {
+    tree: tree.trim(),
+    conflicts: [...new Set(conflicts.filter(Boolean))],
+  };
+}
+
+export function formatSyncReport({
+  ours,
+  upstream,
+  behind,
+  ahead,
+  files,
+  conflicts,
+  commits = [],
+}) {
+  const lines = [
+    `## Upstream sync: ${upstream} → ${ours}`,
+    "",
+    `${behind} new upstream commit(s); ${ahead} commit(s) of ours on top.`,
+    `Files: ${files.theirsOnly.length} only upstream, ${files.oursOnly.length} only ours (kept as they are), ${files.both.length} changed by both.`,
+  ];
+  if (commits.length) {
+    lines.push("", "### New upstream commits");
+    for (const line of commits.slice(0, 40)) lines.push(`- ${line}`);
+    if (commits.length > 40) lines.push(`- … ${commits.length - 40} more`);
+  }
+  if (files.both.length) {
+    lines.push("", "### Changed by both (review after the merge)");
+    for (const path of files.both) lines.push(`- \`${path}\``);
+  }
+  lines.push("");
+  if (behind === 0) lines.push("Already up to date.");
+  else if (conflicts.length) {
+    lines.push("### Conflicts (a trial merge, nothing was changed)");
+    for (const path of conflicts) lines.push(`- \`${path}\``);
+    lines.push(
+      "",
+      "Resolve them on a sync branch: keep our behavior and take upstream's on top; never drop either side blindly.",
+    );
+  } else
+    lines.push("Merges cleanly. Run with --apply to create the sync branch.");
+  return lines.join("\n");
+}
+
+const CONVENTIONAL =
+  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([\w./-]+\))?!?: \S/;
+
+/**
+ * Checks each commit of a branch: message format, fixups left behind, size,
+ * and commits that touch many unrelated areas (should be split).
+ * commits: [{hash, subject, files:[path], added, removed, merge}]
+ */
+export function lintCommits(commits, { maxLines = 400, maxAreas = 3 } = {}) {
+  const issues = [];
+  for (const commit of commits) {
+    const id = `${commit.hash.slice(0, 7)} ${commit.subject}`;
+    if (commit.merge) continue;
+    if (/^(fixup|squash|amend)! /.test(commit.subject))
+      issues.push({
+        commit: id,
+        level: "medium",
+        detail:
+          "fixup left behind: squash it before the PR (git rebase -i --autosquash, only on your own unpushed branch)",
+      });
+    else if (/^(wip|tmp|temp)\b/i.test(commit.subject))
+      issues.push({
+        commit: id,
+        level: "medium",
+        detail: "work-in-progress commit: reword or squash it",
+      });
+    else if (!CONVENTIONAL.test(commit.subject))
+      issues.push({
+        commit: id,
+        level: "info",
+        detail: "not a Conventional Commit (type(scope): summary)",
+      });
+    if (commit.subject.length > 72)
+      issues.push({
+        commit: id,
+        level: "info",
+        detail: `subject is ${commit.subject.length} characters (max 72)`,
+      });
+    const lines = (commit.added ?? 0) + (commit.removed ?? 0);
+    if (lines > maxLines)
+      issues.push({
+        commit: id,
+        level: "medium",
+        detail: `${lines} changed lines: consider splitting it`,
+      });
+    const areas = new Set((commit.files ?? []).map(areaOf));
+    areas.delete("deps");
+    if (areas.size > maxAreas)
+      issues.push({
+        commit: id,
+        level: "medium",
+        detail: `touches ${areas.size} areas (${[...areas].join(", ")}): one concern per commit`,
+      });
+  }
+  return issues;
+}
+
+/**
+ * The area a path belongs to, for grouping changes into commits: tests go
+ * with the code they test, lockfiles and manifests with "deps".
+ */
+export function areaOf(path) {
+  const value = String(path);
+  if (matchesAny(value, DEPS_PATH)) return "deps";
+  const parts = value
+    .replace(/^(__tests__|tests?|spec)\//, "")
+    .replace(/\.(test|spec)\.[^.]+$/, "")
+    .split("/");
+  if (parts.length === 1) return "root";
+  if (
+    ["src", "app", "lib", "packages", "skills", "apps"].includes(parts[0]) &&
+    parts.length > 2
+  )
+    return `${parts[0]}/${parts[1]}`;
+  return parts[0];
+}
+
+/**
+ * Splits a set of changed paths into suggested commits, one per area, in a
+ * safe order (deps first, docs last), each with a Conventional Commit type.
+ */
+export function planCommits(paths) {
+  const groups = new Map();
+  for (const path of paths) {
+    const area = areaOf(path);
+    if (!groups.has(area)) groups.set(area, []);
+    groups.get(area).push(path);
+  }
+  const rank = (area) => (area === "deps" ? 0 : area === "docs" ? 2 : 1);
+  return [...groups.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([area, files]) => {
+      const isTest = files.every((file) =>
+        /(^|\/)(__tests__|tests?)\/|\.(test|spec)\./.test(file),
+      );
+      const type =
+        area === "deps"
+          ? "chore(deps)"
+          : area === "docs" || files.every((file) => /\.mdx?$/i.test(file))
+            ? "docs"
+            : isTest
+              ? `test(${area.split("/").pop()})`
+              : `feat(${area.split("/").pop()})`;
+      return { area, type, files: files.sort() };
+    });
+}

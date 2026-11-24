@@ -1,6 +1,6 @@
 ---
 name: feature-branch-pr
-description: "Branch and pull request control. Use whenever you change code in a git repository: work on a feature branch (never the default branch), keep commits small with conventional messages, use a git worktree when other agents share the checkout, keep the branch up to date, push, and open a pull request that describes the feature addition. Also for reviewing a branch or PR before merge."
+description: "Branch, commit and pull request control. Use whenever you change code in a git repository: work on a feature branch (never the default branch), split work into small conventional commits, juggle several branches and worktrees, keep the branch up to date, sync a fork with its upstream without losing our changes, push, and open a pull request that describes the feature addition. Also for reviewing a branch or PR before merge."
 ---
 
 # Feature branches and pull requests
@@ -50,24 +50,85 @@ cd ../<repo>-<slug>
 Install dependencies there if needed. When the branch is merged, remove it
 with `git worktree remove ../<repo>-<slug>`.
 
-## 3. Commit
+## 3. Many branches at once
+
+`safe-branch branches` lists every local branch and worktree, with:
+
+- how far it is ahead of and behind the base
+- whether it is merged
+- whether it is pushed
+- any uncommitted work
+
+Run it before you start, so you don't open a second branch for the same work.
+
+- **One branch per concern.** For a change that builds on another
+  unmerged branch, branch from it (`safe-branch start <slug> --base
+feat/parent`) and say so in the PR ("depends on #12").
+- **After the parent merges,** move the child onto the base. Do this only
+  while the child branch is yours alone:
+  `git rebase --onto origin/$BASE feat/parent feat/child`
+- **Never delete a branch with unmerged commits.** Remove `[merged]` ones
+  only when the user agrees.
+
+## 4. Commit
 
 - Small, focused commits. Each one builds and passes tests.
 - Conventional Commits: `feat(contact): add form validation`,
   `fix(api): handle empty payload`. Imperative mood, at most 72 characters,
-  with a body explaining *why* when it isn't obvious.
+  with a body explaining _why_ when it isn't obvious.
 - Stage specific files (`git add <paths>`), not `git add -A`. Never commit
   secrets, `.env*` files with values, build output, or generated graphs.
 - Run lint, type check, and tests before each commit you push.
+- **Many changes at once:** `safe-branch split` suggests one commit per area,
+  with tests kept next to their code, dependencies first and docs last.
+  It prints the `git add` command for each group. Check each group with
+  `git diff --cached`, and merge groups that only make sense together.
+- **Before the PR:** `safe-branch commits` checks every commit on the branch:
+  - the message format
+  - `fixup!` or WIP commits left behind
+  - commits over 400 lines
+  - commits that mix more than 3 areas
 
-## 4. Stay current
+  Fix those with `git rebase -i --autosquash origin/$BASE`, and only while
+  the branch is yours and unpushed.
+
+## 5. Stay current
 
 Before pushing, update from the base branch: `git fetch origin && git rebase
 "origin/$BASE"` while the branch is only yours, or merge if others already
 pulled it. Resolve conflicts by understanding both sides, never by blindly
 taking yours.
 
-## 5. Push and open the PR
+## 6. Sync a fork with its upstream
+
+Use this to bring in upstream changes without touching ours. Start from a
+clean tree on our main branch:
+
+```bash
+safe-branch sync --upstream https://github.com/<org>/<repo>.git   # report only
+safe-branch sync --apply                                          # merge on sync/upstream-<date>
+```
+
+- **The report** fetches upstream, deepening a shallow clone if needed. It
+  lists the new commits and the files each side changed, and runs a trial
+  merge. Exit code 2 means there are conflicts. Nothing is changed.
+- **`--apply`** does five things:
+  1. tags a backup;
+  2. creates `sync/<remote>-<date>` from our branch;
+  3. merges upstream there with `--no-ff`;
+  4. checks that every file only we changed is exactly as before;
+  5. leaves our own branch as it was.
+- **On conflicts,** the merge stops on the sync branch. Resolve each file
+  keeping our behavior and adding upstream's change. Never take one side
+  wholesale. Then `git add` the files and `git commit --no-edit`.
+- **Then verify on the sync branch:** install dependencies, and run lint,
+  type check, tests and the build. Look again at the files "changed by both"
+  (`package.json`, lockfiles, translations, version numbers).
+- **Land it** with `git switch main && git merge --ff-only sync/<…>`, then
+  push. Never force-push our main, and never rebase our history onto
+  upstream.
+
+## 7. Push and open the PR
 
 Run `safe-branch check` first. Exit code 2 means something needs the user's
 consent: stop and ask. Put its "Tell the user" items in the PR description.
@@ -89,7 +150,7 @@ compare URL. The PR body contains:
 Open it as a draft while work is still in progress. Keep one PR per feature,
 and split it when it grows past roughly 400 changed lines.
 
-## 6. Reviewing a branch or PR
+## 8. Reviewing a branch or PR
 
 Check that the diff matches the description, it is scoped to one feature, the
 tests cover the new behavior, there are no secrets or debug leftovers,

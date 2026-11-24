@@ -6,8 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   analyzeChange,
+  areaOf,
+  classifySync,
+  lintCommits,
+  parseMergeTree,
   parseNameStatus,
   parseNumstat,
+  planCommits,
   // @ts-expect-error -- plain ESM script without type declarations
 } from "../../scripts/safe-branch-lib.mjs";
 
@@ -126,5 +131,168 @@ describe("safe-branch CLI", () => {
     expect(checked.status).toBe(2);
     expect(checked.stdout).toContain("`remove-me.ts`: file deleted");
     expect(checked.stdout).toContain("STOP");
+  });
+});
+
+describe("sync, commits and split helpers", () => {
+  it("splits paths by side and reads merge-tree conflicts", () => {
+    expect(classifySync(["a", "both", "ours"], ["both", "theirs"])).toEqual({
+      oursOnly: ["a", "ours"],
+      theirsOnly: ["theirs"],
+      both: ["both"],
+    });
+    expect(parseMergeTree("abc123\n", 0)).toEqual({
+      tree: "abc123",
+      conflicts: [],
+    });
+    expect(
+      parseMergeTree("abc123\nsrc/x.ts\nsrc/x.ts\n\nAuto-merging src/x.ts", 1)
+        .conflicts,
+    ).toEqual(["src/x.ts"]);
+  });
+
+  it("flags fixups, WIP, oversized and mixed commits", () => {
+    const issues = lintCommits([
+      {
+        hash: "a".repeat(40),
+        subject: "feat(api): add route",
+        files: ["src/api/x.ts"],
+        added: 10,
+        removed: 0,
+      },
+      {
+        hash: "b".repeat(40),
+        subject: "fixup! feat(api): add route",
+        files: ["src/api/x.ts"],
+        added: 1,
+        removed: 0,
+      },
+      { hash: "c".repeat(40), subject: "wip", files: [], added: 0, removed: 0 },
+      {
+        hash: "d".repeat(40),
+        subject: "feat: everything",
+        files: ["src/a/1", "src/b/2", "docs/x.md", "scripts/y.mjs"],
+        added: 900,
+        removed: 0,
+      },
+      {
+        hash: "e".repeat(40),
+        subject: "Merge upstream",
+        merge: true,
+        files: [],
+        added: 0,
+        removed: 0,
+      },
+    ]);
+    const details = issues
+      .map((issue: { detail: string }) => issue.detail)
+      .join(" | ");
+    expect(
+      issues.some((issue: { commit: string }) =>
+        issue.commit.startsWith("aaaaaaa"),
+      ),
+    ).toBe(false);
+    expect(details).toContain("fixup left behind");
+    expect(details).toContain("work-in-progress");
+    expect(details).toContain("900 changed lines");
+    expect(details).toContain("touches 4 areas");
+    expect(details).not.toContain("Merge upstream");
+  });
+
+  it("groups changes into focused commits, tests with their code", () => {
+    expect(areaOf("__tests__/scripts/foo.test.ts")).toBe("scripts");
+    expect(areaOf("src/components/x/y.tsx")).toBe("src/components");
+    expect(areaOf("package-lock.json")).toBe("deps");
+    expect(
+      planCommits([
+        "docs/MEMORY.md",
+        "scripts/a.mjs",
+        "__tests__/scripts/a.test.ts",
+        "package.json",
+      ]),
+    ).toEqual([
+      { area: "deps", type: "chore(deps)", files: ["package.json"] },
+      {
+        area: "scripts",
+        type: "feat(scripts)",
+        files: ["__tests__/scripts/a.test.ts", "scripts/a.mjs"],
+      },
+      { area: "docs", type: "docs", files: ["docs/MEMORY.md"] },
+    ]);
+  });
+});
+
+describe("safe-branch sync (fork maintenance)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0))
+      rmSync(dir, { recursive: true, force: true });
+  });
+  const sh = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+  const commit = (cwd: string, file: string, text: string, message: string) => {
+    writeFileSync(join(cwd, file), text);
+    sh(cwd, "add", file);
+    sh(cwd, "commit", "-qm", message);
+  };
+
+  function makeFork() {
+    const up = mkdtempSync(join(tmpdir(), "sync-up-"));
+    const fork = mkdtempSync(join(tmpdir(), "sync-fork-"));
+    dirs.push(up, fork);
+    sh(up, "init", "-q", "-b", "main");
+    sh(up, "config", "user.email", "t@example.com");
+    sh(up, "config", "user.name", "t");
+    commit(up, "shared.txt", "one\n", "init");
+    sh(fork, "clone", "-q", up, ".");
+    sh(fork, "config", "user.email", "t@example.com");
+    sh(fork, "config", "user.name", "t");
+    commit(fork, "ours.txt", "our feature\n", "feat: ours");
+    commit(up, "theirs.txt", "their feature\n", "feat: theirs");
+    return { up, fork };
+  }
+  const run = (cwd: string, ...args: string[]) =>
+    spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf-8" });
+
+  it("reports, then merges upstream on a sync branch keeping our files", () => {
+    const { up, fork } = makeFork();
+    const report = run(fork, "sync", "--upstream", up);
+    expect(report.status).toBe(0);
+    expect(report.stdout).toContain(
+      "1 new upstream commit(s); 1 commit(s) of ours",
+    );
+    expect(report.stdout).toContain("Merges cleanly");
+    expect(sh(fork, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+
+    const applied = run(fork, "sync", "--upstream", up, "--apply");
+    expect(applied.status).toBe(0);
+    expect(applied.stdout).toContain(
+      "All 1 file(s) only we changed are untouched",
+    );
+    expect(sh(fork, "rev-parse", "--abbrev-ref", "HEAD")).toMatch(
+      /^sync\/origin-\d{8}$/,
+    );
+    expect(sh(fork, "show", "HEAD:theirs.txt")).toBe("their feature");
+    expect(sh(fork, "show", "HEAD:ours.txt")).toBe("our feature");
+    // main itself is untouched until the user fast-forwards it
+    expect(sh(fork, "ls-tree", "--name-only", "main")).not.toContain(
+      "theirs.txt",
+    );
+  });
+
+  it("stops on a conflict and leaves it on the sync branch", () => {
+    const { up, fork } = makeFork();
+    commit(fork, "shared.txt", "ours\n", "fix: ours");
+    commit(up, "shared.txt", "theirs\n", "fix: theirs");
+    const report = run(fork, "sync", "--upstream", up);
+    expect(report.status).toBe(2);
+    expect(report.stdout).toContain("`shared.txt`");
+    const applied = run(fork, "sync", "--upstream", up, "--apply");
+    expect(applied.status).toBe(2);
+    expect(applied.stdout).toContain("shared.txt");
+    expect(sh(fork, "diff", "--name-only", "--diff-filter=U")).toBe(
+      "shared.txt",
+    );
+    expect(sh(fork, "tag", "--list", "safety/*")).toMatch(/^safety\//);
   });
 });

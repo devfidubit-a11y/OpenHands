@@ -77,20 +77,20 @@ entry that was disabled in Settings → MCP is switched back on. Set
 
 Every note records where it belongs:
 
-| Field | Value |
-| --- | --- |
-| `metadata.scope` | The Telegram chat or forum topic (`-100…` or `-100…:7`). Empty for notes shared by the whole workspace, such as project docs and OpenHands UI conversations. |
-| `metadata.workspace` | The repository root of the working folder, or the folder itself when it isn't a repository. |
-| `metadata.folder` | The working folder. |
+| Field                | Value                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `metadata.scope`     | The Telegram chat or forum topic (`-100…` or `-100…:7`). Empty for notes shared by the whole workspace, such as project docs and OpenHands UI conversations. |
+| `metadata.workspace` | The repository root of the working folder, or the folder itself when it isn't a repository.                                                                  |
+| `metadata.folder`    | The working folder.                                                                                                                                          |
 
 `memory_search` (and `/memoria buscar`) looks at one level:
 
-| Level | What it searches |
-| --- | --- |
+| Level            | What it searches                                                                                                  |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `tema` (default) | This workspace: the notes of this chat or topic, plus what the workspace shares. Other topics are never mixed in. |
-| `carpeta` | This folder only. |
-| `workspace` | The whole repository, across topics. |
-| `todo` | Everything. Use it only when asked. |
+| `carpeta`        | This folder only.                                                                                                 |
+| `workspace`      | The whole repository, across topics.                                                                              |
+| `todo`           | Everything. Use it only when asked.                                                                               |
 
 Agents pass `path` (their working folder) and `scope` (given in the task by
 the bridge) to `memory_search`, `memory_learn` and `memory_ingest`. Plain
@@ -108,16 +108,16 @@ rules.
 `scripts/knowledge-mcp.mjs` is registered for all agents next to
 `qdrant_memory`, and uses the same Qdrant collection and embeddings.
 
-| Tool | What it does |
-| --- | --- |
-| `graph_report` | Returns the project's graphify report, and builds the graph first if it's missing. |
-| `graph_explain` | Explains one node and its neighbors. |
-| `graph_path` | Shows how A reaches B in the code graph. |
-| `graph_update` | Re-indexes the code graph (code only, no LLM). |
-| `memory_search` | Searches the memory of this topic, workspace or folder (see above). |
+| Tool            | What it does                                                                                                         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `graph_report`  | Returns the project's graphify report, and builds the graph first if it's missing.                                   |
+| `graph_explain` | Explains one node and its neighbors.                                                                                 |
+| `graph_path`    | Shows how A reaches B in the code graph.                                                                             |
+| `graph_update`  | Re-indexes the code graph (code only, no LLM).                                                                       |
+| `memory_search` | Searches the memory of this topic, workspace or folder (see above).                                                  |
 | `memory_ingest` | Ingests a file, a folder or a public URL into the caller's workspace. Re-ingesting a source replaces its old chunks. |
-| `memory_learn` | Saves a lesson for this workspace and topic. |
-| `memory_status` | Counts the notes per kind, for one workspace when given a `path`. |
+| `memory_learn`  | Saves a lesson for this workspace and topic.                                                                         |
+| `memory_status` | Counts the notes per kind, for one workspace when given a `path`.                                                    |
 
 `memory_ingest` follows these rules:
 
@@ -137,6 +137,7 @@ rules.
 
   These notes have `type: project-doc`. Turn it off with
   `MEMORY_INGEST_DOCS=false`.
+
 - **Telegram:**
   - `/ingest <path | folder | URL>` ingests the source. For a repository it
     also refreshes the code graph.
@@ -199,34 +200,34 @@ PDFs and images. Its query log is turned off in the image
 
 Installed on every start, from `skills/` in this repository:
 
-| Skill | Use |
-| --- | --- |
-| `senior-devops` | CI/CD, containers, Kubernetes, IaC, observability, incidents |
-| `senior-architect` | System design, trade-offs, ADRs, migrations |
-| `ux-design` | Flows, states, forms, usability, UX writing, accessibility |
-| `ui-design` | Layout, typography, color, tokens, components, responsive |
-| `impeccable` | Deep design critique and polish (downloads its Linux helper on first use) |
-| `component-design-patterns` | Component APIs, composition, compound/headless components, state ownership |
-| `senior-frontend` | React/Next.js/Vue front ends: architecture, data, performance, accessibility, tests |
-| `senior-backend` | APIs and services: validation, data and migrations, auth, idempotency, reliability |
-| `change-safety-guard` | Impact analysis before changes; consent required for deletions, secrets, data, infra; backed-up branches |
-| `feature-branch-pr` | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs |
-| `qa-testing` | Reviews and tests code: unit, integration, API/route handlers, component, E2E, smoke, snapshot, visual regression, performance and Core Web Vitals |
-| `ux-ui-storytelling` | UX/UI design that keeps one narrative across screens, copy and flows |
-| `docker-containers` | Dockerize apps, Compose, isolated test containers on a private Docker engine, container deploys (with consent) |
-| `cloudflare-wrangler` | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent |
-| `latency-optimizer` | Finds the slowest endpoint/page/job/query, fixes the worst one, PR with before/after numbers (`/latency`, `/bot latency`) |
-| `code-scans` | Repo scans by type: performance, database, coverage, dead code, quality, security, dependencies… (`/scan`) |
-| `repo-wiki` | Generated wiki with Mermaid architecture and source links (`/wiki`) |
-| `codebase-qa` | Cited answers about the code and plan mode, read-only (`/ask`, `/plan`) |
-| `pr-reviewer` | PR review with Bugs/Flags/Security, tests, verdict, optional auto-fix (`/review`) |
-| `security-audit` | OWASP, authz, secrets, dependency and config audit (`/security`) |
-| `migration-modernization` | Framework/language migrations in small tested PRs (`/migrate`) |
-| `session-insights` | Post-mortem of an agent session; lessons saved to memory (`/insights`) |
-| `pencil-design` | pen.dev (Pencil) designs through the `pencil` MCP: design → code, code → design, design review (`/design`) |
-| `qdrant-memory` | How to use the shared memory |
-| `code-review` | From the OpenHands extensions package |
-| `graphify` | Installed by Graphify itself |
+| Skill                       | Use                                                                                                                                                |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `senior-devops`             | CI/CD, containers, Kubernetes, IaC, observability, incidents                                                                                       |
+| `senior-architect`          | System design, trade-offs, ADRs, migrations                                                                                                        |
+| `ux-design`                 | Flows, states, forms, usability, UX writing, accessibility                                                                                         |
+| `ui-design`                 | Layout, typography, color, tokens, components, responsive                                                                                          |
+| `impeccable`                | Deep design critique and polish (downloads its Linux helper on first use)                                                                          |
+| `component-design-patterns` | Component APIs, composition, compound/headless components, state ownership                                                                         |
+| `senior-frontend`           | React/Next.js/Vue front ends: architecture, data, performance, accessibility, tests                                                                |
+| `senior-backend`            | APIs and services: validation, data and migrations, auth, idempotency, reliability                                                                 |
+| `change-safety-guard`       | Impact analysis before changes; consent required for deletions, secrets, data, infra; backed-up branches                                           |
+| `feature-branch-pr`         | Branch and PR control: feature branches, worktrees for parallel agents, conventional commits, draft PRs                                            |
+| `qa-testing`                | Reviews and tests code: unit, integration, API/route handlers, component, E2E, smoke, snapshot, visual regression, performance and Core Web Vitals |
+| `ux-ui-storytelling`        | UX/UI design that keeps one narrative across screens, copy and flows                                                                               |
+| `docker-containers`         | Dockerize apps, Compose, isolated test containers on a private Docker engine, container deploys (with consent)                                     |
+| `cloudflare-wrangler`       | Workers/Pages/OpenNext with wrangler (installed); deploys and secrets need consent                                                                 |
+| `latency-optimizer`         | Finds the slowest endpoint/page/job/query, fixes the worst one, PR with before/after numbers (`/latency`, `/bot latency`)                          |
+| `code-scans`                | Repo scans by type: performance, database, coverage, dead code, quality, security, dependencies… (`/scan`)                                         |
+| `repo-wiki`                 | Generated wiki with Mermaid architecture and source links (`/wiki`)                                                                                |
+| `codebase-qa`               | Cited answers about the code and plan mode, read-only (`/ask`, `/plan`)                                                                            |
+| `pr-reviewer`               | PR review with Bugs/Flags/Security, tests, verdict, optional auto-fix (`/review`)                                                                  |
+| `security-audit`            | OWASP, authz, secrets, dependency and config audit (`/security`)                                                                                   |
+| `migration-modernization`   | Framework/language migrations in small tested PRs (`/migrate`)                                                                                     |
+| `session-insights`          | Post-mortem of an agent session; lessons saved to memory (`/insights`)                                                                             |
+| `pencil-design`             | pen.dev (Pencil) designs through the `pencil` MCP: design → code, code → design, design review (`/design`)                                         |
+| `qdrant-memory`             | How to use the shared memory                                                                                                                       |
+| `code-review`               | From the OpenHands extensions package                                                                                                              |
+| `graphify`                  | Installed by Graphify itself                                                                                                                       |
 
 They go to `~/.agents/skills` (OpenHands agent, also forwarded to ACP agents)
 and to Claude Code's own skills directory. Copies managed this way are replaced
@@ -271,6 +272,27 @@ damaging or deleting anything without your consent:
   pushing.
 - `safe-branch backups` lists the backup tags. To get a state back:
   `git switch -c restore <tag>`.
+- `safe-branch branches` shows every local branch and worktree, with:
+  - how far it is ahead of and behind the base
+  - whether it is merged or pushed
+  - any uncommitted work
+- `safe-branch split` suggests how to split a large change into focused
+  commits, one per area.
+- `safe-branch commits` lints the branch's commits. It flags messages that
+  aren't Conventional Commits, `fixup!` and WIP commits, oversized commits,
+  and commits that mix more than 3 areas.
+- `safe-branch sync [--upstream <url>] [--apply]` keeps a fork current
+  without touching our changes. It fetches upstream, deepening a shallow
+  clone if needed. It lists the new commits and the files each side
+  changed, and runs a trial merge.
+
+  With `--apply` it takes a backup tag, merges upstream on
+  `sync/<remote>-<date>`, and checks that every file only we changed is
+  unchanged. On conflicts it stops on that branch. It never touches our
+  main branch, rebases or pushes.
+
+  The `upstream` Telegram bot (`/bot upstream`) runs this weekly and
+  reports. Merging into main waits for your OK.
 
 This is guidance plus a tool, not a sandbox: agents can still run shell
 commands. For hard limits, keep `AUTO_LOGIN` off on shared machines, mount
