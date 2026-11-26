@@ -56,7 +56,7 @@ export function buildMemoryMcpServer(env) {
   return { transport: "stdio", command: "mcp-server-qdrant", env: serverEnv };
 }
 
-async function waitForServer(base, headers, timeoutMs) {
+export async function waitForServer(base, headers, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

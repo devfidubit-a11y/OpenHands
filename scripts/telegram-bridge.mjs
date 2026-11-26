@@ -58,6 +58,7 @@ import {
   storeNotes,
 } from "./knowledge-lib.mjs";
 import { McpStdioClient } from "./memory-watcher-lib.mjs";
+import { formatVersionsMessage } from "./stack-docs-lib.mjs";
 import { buildMemoryMcpServer } from "./register-memory-mcp.mjs";
 
 import {
@@ -175,6 +176,8 @@ Agentes expertos (los reparte @coordinador):
 /ux [pantalla] — @ux revisa la UX del diseño en pen.dev, prioriza los problemas y crea una copia optimizada (antes/después). También: "pen, revisa la ux de wallet"
 /pen <lo que quieras> — habla con pen.dev en lenguaje natural: "foto de la pantalla wallet únicamente", "lista", "arregla el header de wallet" (te manda la foto al terminar). También vale escribir "pen, …" o "en pen …" sin comando
 /design <tarea> — frontend con pen.dev: diseño .pen → código (o código → diseño) vía Pencil MCP
+/movil <tarea> — app Flutter: un agente experto la cambia, la prueba y la abre en el simulador de iPhone del Mac (con captura)
+/versiones — última versión estable de Flutter, Node, Next.js, NestJS, Python, Rust, Go, C#, C++, JS/TS y Java (se actualiza sola)
 
 Consejo de expertos (trabajan en paralelo, debaten y votan):
 /consejo [expertos:] <tema> — cada experto propone por su cuenta, luego
@@ -204,7 +207,7 @@ Bots y tareas programadas:
 /schedule <cuándo> <texto o /comando> — programa una tarea (diario 09:00, lunes 09:00, laborables 08:30, cada 6h)
 /schedule — lista las tareas · /schedule rm <id> · /schedule run <id>
 
-/profiles — perfiles de agente del servidor
+/profiles — perfiles de agente del servidor (flutter y mobile-qa son expertos móviles)
 /profile <nombre> — perfil para los próximos /new de este chat
 /whoami — muestra el id de este chat`;
 
@@ -234,6 +237,8 @@ const COMMANDS = [
   ["pen", "Hablar con pen.dev: fotos, cambios"],
   ["ux", "Revisión y optimización UX del diseño"],
   ["design", "Frontend con diseños de pen.dev"],
+  ["movil", "App Flutter probada en el simulador iPhone"],
+  ["versiones", "Versiones estables de cada stack"],
   ["consejo", "Consejo de expertos: proponen, debaten y deciden"],
   ["feedback", "Valoraciones de los agentes"],
   ["evals", "Evaluar a los agentes (@juez)"],
@@ -791,6 +796,19 @@ async function handleCommand(chatId, command, args, messageId, message = null) {
         chatId,
         `@${agent.name} ya no se sigue en este chat (la conversación sigue en el servidor).`,
       );
+    }
+
+    case "versiones": {
+      const path =
+        process.env.STACK_DOCS_STATE ||
+        join(dirname(resolve(config.statePath)), "stack-docs-state.json");
+      let docsState = null;
+      try {
+        docsState = JSON.parse(await readFile(path, "utf8"));
+      } catch {
+        docsState = null;
+      }
+      return say(chatId, formatVersionsMessage(docsState));
     }
 
     case "profiles": {

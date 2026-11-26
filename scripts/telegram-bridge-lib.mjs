@@ -486,7 +486,9 @@ export function buildMemberPrompt({ name, lead, goal, subtask }) {
     "senior-backend, component-design-patterns, pencil-design (pen.dev designs",
     "through the pencil MCP), ux-ui-storytelling, ui-design,",
     "ux-design, qa-testing, cloudflare-wrangler, docker-containers, senior-devops,",
-    "senior-architect), and add or update tests for what you change.",
+    "senior-architect, flutter-expert and ios-simulator for mobile work on the",
+    "iPhone simulator), and add or update tests for what you change. Check",
+    "library APIs for the project's version with the context7 MCP.",
     "",
     "Follow the change-safety-guard skill: never delete, overwrite or touch",
     "secrets, data or infra without the user's consent; ask first.",
@@ -1025,6 +1027,15 @@ export function buildSkillRequest(command, rawArgs = "") {
       return {
         request: `Frontend and design work with pen.dev: use the pencil-design skill (the pencil MCP tools; never read .pen files as text) together with senior-frontend, component-design-patterns, ux-design and ui-design. Task: ${args}. Map the design's styles to the project's tokens, build or update the components on a feature branch with tests and a draft PR, and compare the result with the Pencil frame. Don't save changes to an existing .pen file without asking me.`,
       };
+    case "movil":
+      if (!args)
+        return {
+          usage:
+            "Uso: /movil <tarea de la app Flutter> (ej.: /movil arregla el overflow del login y compruébalo en el iPhone 17)",
+        };
+      return {
+        request: `Mobile work on a Flutter app: give it to an agent that uses the flutter-expert and ios-simulator skills (the OpenHands profile "flutter" when creating one), with the simulator MCP on the Mac host and context7 for the docs of the project's versions. Task: ${args}. Work on a feature branch, run flutter analyze and the tests through flutter_cmd, run the app with flutter_run_ios on an iPhone simulator, check it with sim_screenshot (light and dark), and report what you ran and saw.`,
+      };
     default:
       return null;
   }
@@ -1041,6 +1052,7 @@ export const SKILL_COMMANDS = [
   "security",
   "migrate",
   "design",
+  "movil",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1480,6 +1492,15 @@ export const COUNCIL_EXPERTS = {
       "CI/CD, Docker, Cloudflare deploys, observability, cost and rollback",
     skills: ["senior-devops", "docker-containers", "cloudflare-wrangler"],
   },
+  movil: {
+    title: "senior Flutter/mobile engineer",
+    focus:
+      "Flutter/Dart architecture, state management, iOS/Android platform details, app performance, store readiness and how each proposal looks on a real iPhone",
+    skills: [
+      "flutter-expert",
+      "ios-simulator (simulator MCP: run the app and take screenshots)",
+    ],
+  },
   growth: {
     title: "growth and marketing expert",
     focus:
@@ -1520,6 +1541,10 @@ const COUNCIL_ALIASES = {
   analytics: "datos",
   test: "qa",
   testing: "qa",
+  mobile: "movil",
+  flutter: "movil",
+  ios: "movil",
+  app: "movil",
 };
 
 const councilKey = (word) => {

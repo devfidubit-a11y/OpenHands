@@ -212,6 +212,10 @@ RUN npm install -g "@anthropic-ai/claude-code@2.1.325" && \
     claude --version && npm cache clean --force
 COPY scripts/register-memory-mcp.mjs /opt/agent-canvas/register-memory-mcp.mjs
 COPY scripts/register-pen-mcp.mjs /opt/agent-canvas/register-pen-mcp.mjs
+COPY scripts/register-dev-mcps.mjs /opt/agent-canvas/register-dev-mcps.mjs
+COPY scripts/register-agent-profiles.mjs /opt/agent-canvas/register-agent-profiles.mjs
+COPY scripts/stack-docs-lib.mjs /opt/agent-canvas/stack-docs-lib.mjs
+COPY scripts/stack-docs-watcher.mjs /opt/agent-canvas/stack-docs-watcher.mjs
 COPY scripts/memory-watcher.mjs /opt/agent-canvas/memory-watcher.mjs
 COPY scripts/memory-watcher-lib.mjs /opt/agent-canvas/memory-watcher-lib.mjs
 COPY scripts/knowledge-lib.mjs /opt/agent-canvas/knowledge-lib.mjs

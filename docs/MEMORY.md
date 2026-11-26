@@ -225,6 +225,8 @@ Installed on every start, from `skills/` in this repository:
 | `migration-modernization`   | Framework/language migrations in small tested PRs (`/migrate`)                                                                                     |
 | `session-insights`          | Post-mortem of an agent session; lessons saved to memory (`/insights`)                                                                             |
 | `pencil-design`             | pen.dev (Pencil) designs through the `pencil` MCP: design → code, code → design, design review (`/design`)                                         |
+| `flutter-expert`            | Flutter/Dart apps: architecture, state, tests, performance; checks on the iPhone simulator (`/movil`, [MOBILE.md](MOBILE.md))                        |
+| `ios-simulator`             | iPhone/iPad simulators on the Mac through the `simulator` MCP: run, screenshot, logs, taps                                                         |
 | `qdrant-memory`             | How to use the shared memory                                                                                                                       |
 | `code-review`               | From the OpenHands extensions package                                                                                                              |
 | `graphify`                  | Installed by Graphify itself                                                                                                                       |

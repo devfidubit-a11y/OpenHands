@@ -936,6 +936,36 @@ if [ -n "${PEN_MCP_URL:-}" ]; then
     node /opt/agent-canvas/register-pen-mcp.mjs &
 fi
 
+# Live library docs (Context7, on unless CONTEXT7_MCP=false) and the iOS
+# Simulator + Flutter tools on the Mac host (SIM_MCP_URL, docs/MOBILE.md),
+# plus the expert agent profiles (flutter, mobile-qa). One-shot, never fatal.
+OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+  node /opt/agent-canvas/register-dev-mcps.mjs &
+OH_AGENT_SERVER_URL="http://127.0.0.1:${AGENT_SERVER_PORT}" \
+OH_SESSION_API_KEY="$EFFECTIVE_SESSION_KEY" \
+  node /opt/agent-canvas/register-agent-profiles.mjs &
+
+# Stack docs watcher (docs/STACK_DOCS.md): every 12 h checks the newest
+# stable Flutter, Node, Next.js, NestJS, Python, Rust, Go, .NET, LLVM,
+# TypeScript and Java, stores what changed in the shared memory and keeps the
+# always-on stack-versions note current. Off with STACK_DOCS_WATCH=false.
+if [ "${STACK_DOCS_WATCH:-true}" != "false" ]; then
+  (
+    child=""
+    trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' SIGINT SIGTERM
+    while :; do
+      STACK_DOCS_STATE="${STACK_DOCS_STATE:-${STATE_DIR}/stack-docs-state.json}" \
+        node /opt/agent-canvas/stack-docs-watcher.mjs &
+      child=$!
+      wait "$child" || true
+      log_error "Stack docs watcher exited; restarting in 60s"
+      sleep 60 & wait $!
+    done
+  ) &
+  PIDS+=($!)
+fi
+
 # ── 8. (Optional) Memory watcher ────────────────────────────────────────────
 # Stores a summary of each finished conversation in the shared memory, and
 # installs graphify's git hooks in repositories under /projects so every

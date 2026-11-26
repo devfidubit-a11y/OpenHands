@@ -199,41 +199,41 @@ export function buildQualityNote(
 }
 
 export const ALWAYS_ON_NAME = "team-memory";
-const CLAUDE_BLOCK_START = "<!-- >>> agent-canvas team-memory (managed) -->";
-const CLAUDE_BLOCK_END = "<!-- <<< agent-canvas team-memory -->";
 
 /**
- * OpenHands loads a plain `.md` without triggers in ~/.agents/skills as
- * permanent context of every agent, including the ones opened from the
- * OpenHands UI. Claude Code (ACP) reads its user CLAUDE.md, where the same
- * text goes in a managed block. Returns the paths written.
+ * Writes a note that every agent always has in context. OpenHands loads a
+ * plain `.md` without triggers in ~/.agents/skills as permanent context of
+ * every agent, including the ones opened from the OpenHands UI. Claude Code
+ * (ACP) reads its user CLAUDE.md, where the same text goes in a managed block
+ * named after the note. Returns the paths written.
  */
-export function installAlwaysOn(
-  guardrails = [],
+export function installManagedNote(
+  { name, title, body },
   { skillDirs = [], claudeFiles = [] } = {},
 ) {
-  const protocol = buildTeamProtocol(guardrails);
+  const start = `<!-- >>> agent-canvas ${name} (managed) -->`;
+  const end = `<!-- <<< agent-canvas ${name} -->`;
   const written = [];
-  const skill = `---\nname: ${ALWAYS_ON_NAME}\n---\n\n# Team memory and quality bar\n\n${protocol}\n`;
+  const skill = `---\nname: ${name}\n---\n\n# ${title}\n\n${body}\n`;
   for (const dir of skillDirs) {
     try {
       mkdirSync(dir, { recursive: true });
-      const path = join(dir, `${ALWAYS_ON_NAME}.md`);
+      const path = join(dir, `${name}.md`);
       writeFileSync(path, skill);
       written.push(path);
     } catch {
       // a missing or read-only folder is not fatal
     }
   }
-  const block = `${CLAUDE_BLOCK_START}\n# Team memory and quality bar\n\n${protocol}\n${CLAUDE_BLOCK_END}`;
+  const block = `${start}\n# ${title}\n\n${body}\n${end}`;
   for (const path of claudeFiles) {
     try {
       const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-      const start = current.indexOf(CLAUDE_BLOCK_START);
-      const end = current.indexOf(CLAUDE_BLOCK_END);
+      const from = current.indexOf(start);
+      const to = current.indexOf(end);
       const next =
-        start >= 0 && end > start
-          ? `${current.slice(0, start)}${block}${current.slice(end + CLAUDE_BLOCK_END.length)}`
+        from >= 0 && to > from
+          ? `${current.slice(0, from)}${block}${current.slice(to + end.length)}`
           : `${current.trimEnd()}${current.trim() ? "\n\n" : ""}${block}\n`;
       if (next !== current) {
         mkdirSync(dirname(path), { recursive: true });
@@ -245,6 +245,18 @@ export function installAlwaysOn(
     }
   }
   return written;
+}
+
+/** The team protocol + learned guardrails, always on (see installManagedNote). */
+export function installAlwaysOn(guardrails = [], targets = {}) {
+  return installManagedNote(
+    {
+      name: ALWAYS_ON_NAME,
+      title: "Team memory and quality bar",
+      body: buildTeamProtocol(guardrails),
+    },
+    targets,
+  );
 }
 
 /** The default places: ~/.agents/skills and Claude Code's CLAUDE.md. */

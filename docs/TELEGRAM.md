@@ -120,7 +120,8 @@ Replies to an agent's message and `@name message` always go to that agent.
 | `/status [name]`, `/result [name]` | Shows status, or the agent's last final answer.                                                                                                                                           |
 | `/stop [name]`                     | Pauses an agent.                                                                                                                                                                          |
 | `/forget <name>`                   | Stops tracking an agent here. The conversation stays on the server.                                                                                                                       |
-| `/profiles`, `/profile <name>`     | Lists Agent Profiles, or picks one for this chat's next `/new`.                                                                                                                           |
+| `/profiles`, `/profile <name>`     | Lists Agent Profiles, or picks one for this chat's next `/new`. `flutter` and `mobile-qa` are the mobile experts ([MOBILE.md](MOBILE.md)).                                            |
+| `/versiones`                       | Newest stable version of each stack and recent changes ([STACK_DOCS.md](STACK_DOCS.md)).                                                                                                  |
 
 ### Natural chat
 
@@ -262,6 +263,7 @@ so (fixes go through feature branches and PRs).
 | `/migrate <from → to>`                     | `migration-modernization`    | A step-by-step plan for approval, then one PR per step.                                                                                                                                                                                                                                                       |
 | `/insights [name]`                         | `session-insights`           | The bridge reads that agent's events and a new agent reports where time went, an improved prompt, and saves lessons to memory.                                                                                                                                                                                |
 | `/design <task>`                           | `pencil-design`              | Frontend with pen.dev: implements a `.pen` design in code (or designs from code) through the Pencil MCP, maps styles to your tokens, opens a draft PR. See [PENCIL.md](PENCIL.md).                                                                                                                            |
+| `/movil <task>` | `flutter-expert`, `ios-simulator` | Flutter app work: an agent changes the app, runs analyze and the tests, opens it on the iPhone simulator of the Mac and checks screenshots. See [MOBILE.md](MOBILE.md). |
 | `/pen <anything>` or "pen, …"              | `pencil-design`              | Talk to pen.dev in plain language. Photos ("foto de la pantalla wallet únicamente") and "lista" are answered by the bridge directly; changes ("arregla el header de wallet") go to the chat's design agent `@pen`, which edits live in the Pen app and the bridge then posts photos of the frames it changed. |
 | `/ux [screen]` or "pen, revisa la ux de …" | `ux-design`, `pencil-design` | The chat's `@ux` agent reviews the screens (hierarchy, heuristics, WCAG AA, spacing, type, tokens, copy, states), ranks the findings, and optimizes a copy `· UX v2` of each screen (originals untouched). The bridge posts before/after photos.                                                              |
 
@@ -286,8 +288,8 @@ so (fixes go through feature branches and PRs).
 
 Nothing changes in the code until you approve the plan. Experts: `producto`,
 `ux`, `frontend`, `backend`, `arquitectura`, `qa`, `seguridad`,
-`rendimiento`, `devops`, `growth`, `datos` (English aliases work too: `pm`,
-`security`, `perf`, `marketing`, `data`…). Default panel: producto, ux,
+`rendimiento`, `devops`, `movil`, `growth`, `datos` (English aliases work
+too: `pm`, `security`, `perf`, `marketing`, `data`, `flutter`, `mobile`…). Default panel: producto, ux,
 arquitectura, qa, seguridad; at most 6. `/consejo` alone lists them and the
 councils in progress. `/bot consejo` runs one every Thursday.
 

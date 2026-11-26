@@ -75,6 +75,7 @@ import {
   slugify,
   statusTransition,
   teamDone,
+  SKILL_COMMANDS,
 } from "../../scripts/telegram-bridge-lib.mjs";
 
 describe("telegram bridge config", () => {
@@ -1422,5 +1423,24 @@ describe("natural group conversation", () => {
 
   it("lets the coordinator stay quiet with NOOP", () => {
     expect(buildCoordinatorPrompt("hola")).toContain("reply exactly NOOP");
+  });
+});
+
+describe("mobile (Flutter + iPhone simulator) experts", () => {
+  it("/movil sends the coordinator a simulator-checked Flutter task", () => {
+    expect(buildSkillRequest("movil", "").usage).toContain("/movil");
+    const { request } = buildSkillRequest("movil", "arregla el login");
+    expect(request).toContain("flutter-expert");
+    expect(request).toContain("flutter_run_ios");
+    expect(request).toContain("sim_screenshot");
+    expect(request).toContain("arregla el login");
+    expect(SKILL_COMMANDS).toContain("movil");
+  });
+
+  it("the council has a mobile expert reachable by alias", () => {
+    expect(COUNCIL_EXPERTS.movil.skills[0]).toBe("flutter-expert");
+    expect(
+      parseCouncilArgs("flutter, ux: rediseñar el checkout").experts,
+    ).toEqual(["movil", "ux"]);
   });
 });
