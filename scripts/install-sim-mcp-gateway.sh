@@ -96,7 +96,13 @@ PLIST
 chmod 600 "$PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# Right after a bootout, bootstrap can fail with "5: Input/output error"
+# while launchd finishes unloading; retry a few times.
+for attempt in 1 2 3 4 5; do
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
+  [ "$attempt" = 5 ] && { launchctl bootstrap "gui/$(id -u)" "$PLIST"; exit 1; }
+  sleep 1
+done
 ok=""
 for _ in $(seq 1 20); do
   if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then ok=1; break; fi
